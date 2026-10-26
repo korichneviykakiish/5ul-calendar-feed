@@ -28,7 +28,15 @@ def process(state, client, config, run_number, now=None):
         print("[playtime] Sample complete; online friends=" + str(len(friends)) + "; accepted=" + str(accepted))
     except ApiFailure as error:
         state = interrupt(state, error.status, int(time.time()), error.retry_after)
-        print("[playtime] Sampling paused: " + error.status)
+        cookies = client.cookies()
+        print("[playtime] Sampling paused: " + json.dumps({
+            "status": error.status,
+            "operation": error.operation,
+            "http_status": error.http_status,
+            "reason": error.reason,
+            "auth_cookie_present": bool(cookies.get("auth")),
+            "two_factor_cookie_present": bool(cookies.get("twoFactorAuth")),
+        }))
     except ValueError:
         state = interrupt(state, "invalid_response", int(time.time()))
         print("[playtime] Snapshot rejected; previous hours retained")

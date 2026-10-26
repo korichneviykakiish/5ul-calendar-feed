@@ -6,14 +6,36 @@ from email.utils import parsedate_to_datetime
 
 import requests
 
+from session_state import user_agent
+
 API = "https://api.vrchat.cloud/api/1"
 
 
 class ApiFailure(Exception):
-    def __init__(self, status, retry_after=0):
+    def __init__(self, status, retry_after=0, operation="api", http_status=0, reason="unspecified"):
         super().__init__(status)
         self.status = status
         self.retry_after = retry_after
+        self.operation = operation
+        self.http_status = http_status
+        self.reason = reason
+
+
+def auth_reason(response):
+    try:
+        body = response.json()
+    except ValueError:
+        return "non-json-response"
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else error
+    if not isinstance(message, str):
+        return "unclassified"
+    return {
+        "missing credentials": "missing-credentials",
+        "unauthorized": "unauthorized",
+        "invalid credentials": "invalid-credentials",
+        "logging in from too many places? check your email for verification link": "email-location-verification",
+    }.get(message.strip().strip('"').rstrip(".").casefold(), "unclassified")
 
 
 def retry_delay(value):
@@ -28,7 +50,7 @@ def retry_delay(value):
 class Client:
     def __init__(self, cookies, contact, spacing=2, session=None, sleep=time.sleep):
         self.session = session or requests.Session()
-        self.session.headers["User-Agent"] = "FiveUlPlaytime/1.0 (+" + contact + ")"
+        self.session.headers["User-Agent"] = user_agent(contact)
         self.session.headers["Accept"] = "application/json"
         self.sleep = sleep
         self.spacing = spacing
@@ -37,7 +59,7 @@ class Client:
             if cookies.get(name):
                 self.session.cookies.set(name, cookies[name], domain="api.vrchat.cloud", secure=True)
 
-    def call(self, method, path, params=None):
+    def call(self, method, path, params=None, operation="api"):
         if self.calls:
             self.sleep(self.spacing)
         self.calls += 1
@@ -45,24 +67,29 @@ class Client:
             response = self.session.request(method, API + path, params=params,
                                             timeout=(10, 25), allow_redirects=False)
         except requests.RequestException:
-            raise ApiFailure("network_error") from None
+            raise ApiFailure("network_error", operation=operation) from None
         if response.status_code == 429:
-            raise ApiFailure("rate_limited", retry_delay(response.headers.get("Retry-After", "")))
+            raise ApiFailure("rate_limited", retry_delay(response.headers.get("Retry-After", "")),
+                             operation, 429, auth_reason(response))
         if response.status_code == 401:
-            raise ApiFailure("login_required")
+            raise ApiFailure("login_required", operation=operation, http_status=401, reason=auth_reason(response))
         if response.status_code == 403:
-            raise ApiFailure("access_denied")
+            raise ApiFailure("access_denied", operation=operation, http_status=403, reason=auth_reason(response))
         if response.status_code != 200:
-            raise ApiFailure("api_error")
+            raise ApiFailure("api_error", operation=operation, http_status=response.status_code)
         try:
             return response.json()
         except ValueError:
-            raise ApiFailure("invalid_response") from None
+            raise ApiFailure("invalid_response", operation=operation, http_status=200) from None
 
     def verify(self):
-        user = self.call("GET", "/auth/user")
-        if not isinstance(user, dict) or "requiresTwoFactorAuth" in user or not user.get("id"):
-            raise ApiFailure("login_required")
+        user = self.call("GET", "/auth/user", operation="verify-session")
+        if isinstance(user, dict) and "requiresTwoFactorAuth" in user:
+            raise ApiFailure("login_required", operation="verify-session", http_status=200,
+                             reason="two-factor-required")
+        if not isinstance(user, dict) or not str(user.get("id", "")).startswith("usr_"):
+            raise ApiFailure("login_required", operation="verify-session", http_status=200,
+                             reason="missing-user-id")
 
     def friends(self, max_pages, max_duration):
         started = time.monotonic()
@@ -70,7 +97,7 @@ class Client:
         seen = set()
         for page in range(max_pages):
             rows = self.call("GET", "/auth/user/friends",
-                             {"offline": "false", "n": 100, "offset": page * 100})
+                             {"offline": "false", "n": 100, "offset": page * 100}, operation="list-friends")
             if not isinstance(rows, list) or len(rows) > 100:
                 raise ApiFailure("invalid_response")
             for row in rows:
@@ -88,7 +115,7 @@ class Client:
 
     def accept_requests(self, limit):
         rows = self.call("GET", "/auth/user/notifications",
-                         {"type": "friendRequest", "n": min(100, limit), "offset": 0})
+                         {"type": "friendRequest", "n": min(100, limit), "offset": 0}, operation="list-requests")
         if not isinstance(rows, list):
             raise ApiFailure("invalid_response")
         accepted = 0
@@ -100,7 +127,7 @@ class Client:
                 raise ApiFailure("invalid_response")
             if not all(c.isascii() and (c.isalnum() or c in "_-") for c in notification):
                 raise ApiFailure("invalid_response")
-            self.call("PUT", "/auth/user/notifications/" + notification + "/accept")
+            self.call("PUT", "/auth/user/notifications/" + notification + "/accept", operation="accept-request")
             accepted += 1
         return accepted
 

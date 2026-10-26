@@ -11,6 +11,7 @@ from playtime.model import apply_sample, interrupt, leaderboard, new_state, vali
 from playtime.run import process
 from playtime.storage import Store, retained_assets
 from playtime.vrchat import ApiFailure, Client, retry_delay
+from session_state import user_agent
 
 WORLD = "wrld_test"
 CONFIG = json.loads((Path(__file__).parent / "config.json").read_text())
@@ -176,8 +177,44 @@ class ApiTests(unittest.TestCase):
 
     def test_auth_challenge_is_not_authenticated(self):
         self.session.request.return_value = response({"requiresTwoFactorAuth": ["emailOtp"]})
-        with self.assertRaises(ApiFailure):
+        with self.assertRaises(ApiFailure) as failure:
             self.client.verify()
+        self.assertEqual(failure.exception.operation, "verify-session")
+        self.assertEqual(failure.exception.reason, "two-factor-required")
+        self.assertEqual(failure.exception.http_status, 200)
+
+    def test_shared_login_client_identity(self):
+        self.assertEqual(self.session.headers["User-Agent"], user_agent("test@example.com"))
+        self.assertEqual(user_agent("test@example.com"), "FiveUlCalendarFeed/1.0 test@example.com")
+
+    def test_verify_requires_valid_user_id(self):
+        for body in ({}, {"id": "other"}, {"id": None}, []):
+            with self.subTest(body=body):
+                self.session.request.return_value = response(body)
+                with self.assertRaises(ApiFailure) as failure:
+                    self.client.verify()
+                self.assertEqual(failure.exception.reason, "missing-user-id")
+
+    def test_auth_failure_reports_operation_without_response_contents(self):
+        for operation, invoke in (
+            ("verify-session", self.client.verify),
+            ("list-friends", lambda: self.client.friends(2, 120)),
+            ("list-requests", lambda: self.client.accept_requests(20)),
+        ):
+            with self.subTest(operation=operation):
+                self.session.request.return_value = response({"error": {"message": "private-server-text"}}, 401)
+                with self.assertRaises(ApiFailure) as failure:
+                    invoke()
+                self.assertEqual(failure.exception.operation, operation)
+                self.assertEqual(failure.exception.http_status, 401)
+                self.assertEqual(failure.exception.reason, "unclassified")
+                self.assertNotIn("private-server-text", str(vars(failure.exception)))
+
+    def test_known_auth_reason_is_classified(self):
+        self.session.request.return_value = response({"error": {"message": '"Missing Credentials"'}}, 401)
+        with self.assertRaises(ApiFailure) as failure:
+            self.client.verify()
+        self.assertEqual(failure.exception.reason, "missing-credentials")
 
     def test_no_password_login_or_automatic_retry(self):
         self.session.request.return_value = response({}, 429, {"Retry-After": "7200"})
@@ -256,6 +293,21 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["players"]["usr_one"]["seconds"], 0)
         self.assertIsNone(result["last_sample"])
         self.client.accept_requests.assert_not_called()
+
+    def test_auth_diagnostic_contains_only_status_and_cookie_presence(self):
+        self.client.verify.side_effect = ApiFailure("login_required", operation="verify-session",
+                                                   http_status=401, reason="unauthorized")
+        self.client.cookies.return_value = {"auth": "SECRET_COOKIE"}
+        with patch("playtime.run.print") as output, patch("playtime.run.time.time", return_value=1300):
+            result, _ = process(self.state, self.client, CONFIG, 2)
+        message = output.call_args.args[0]
+        diagnostic = json.loads(message.removeprefix("[playtime] Sampling paused: "))
+        self.assertEqual(diagnostic["operation"], "verify-session")
+        self.assertTrue(diagnostic["auth_cookie_present"])
+        self.assertFalse(diagnostic["two_factor_cookie_present"])
+        self.assertNotIn("SECRET_COOKIE", message)
+        self.assertEqual(result["status"], "login_required")
+        self.client.friends.assert_not_called()
 
 
 class StorageTests(unittest.TestCase):

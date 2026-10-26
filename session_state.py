@@ -7,6 +7,11 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 
+def user_agent(contact):
+    # Both jobs reuse one VRChat session and must identify as the same client.
+    return "FiveUlCalendarFeed/1.0 " + contact
+
+
 def session_cipher(key):
     if not key:
         raise ValueError("VRC_SESSION_KEY is required; store a Fernet key in GitHub Secrets")

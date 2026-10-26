@@ -34,7 +34,7 @@ from urllib.parse import quote
 import pyotp
 import requests
 
-from session_state import load_cookies, save_cookies, session_cipher
+from session_state import load_cookies, save_cookies, session_cipher, user_agent
 
 API = "https://api.vrchat.cloud/api/1"
 STATE_DIR = "state"
@@ -50,7 +50,7 @@ LOGIN_ACTION = os.environ.get("VRC_LOGIN_ACTION", "auto") or "auto"
 CONTACT = os.environ.get("VRC_CONTACT", "no-contact-set@example.com")
 SESSION_KEY = os.environ.get("VRC_SESSION_KEY", "")
 
-USER_AGENT = "FiveUlCalendarFeed/1.0 " + CONTACT
+USER_AGENT = user_agent(CONTACT)
 
 # Горизонт: прошедшие события старше 3 часов выбрасываем, дальше 35 дней — тоже.
 PAST_GRACE = timedelta(hours=3)
