@@ -65,7 +65,9 @@ def process(state, client, config, run_number, now=None):
         state = apply_sample(state, friends, sampled, run_number, config["max_gap_seconds"])
         # Joining is explicit opt-in. Accept incoming requests only, never send any.
         accepted = client.accept_requests(config["max_friend_requests_per_run"])
-        print("[playtime] Sample complete; online friends=" + str(len(friends)) + "; accepted=" + str(accepted))
+        in_world = sum(1 for row in state["players"].values() if row["present"])
+        print("[playtime] Sample complete; online friends=" + str(len(friends))
+              + "; in configured world=" + str(in_world) + "; accepted=" + str(accepted))
     except ApiFailure as error:
         state = interrupt(state, error.status, int(time.time()), error.retry_after)
         cookies = client.cookies()

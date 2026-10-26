@@ -13,6 +13,14 @@
 
 ## Статус запуска: 26 октября 2026
 
+Счётчик работает в режиме отдельного TOTP-входа на каждом runner.
+Два независимых полных запуска успешно получили друзей и завершили свои сессии:
+[первый](https://github.com/korichneviykakiish/5ul-calendar-feed/actions/runs/40395652831),
+[второй](https://github.com/korichneviykakiish/5ul-calendar-feed/actions/runs/40396185118).
+Включено расписание `PLAYTIME_ENABLED=true` раз в пять минут; GitHub может задерживать запуски.
+Афиша остаётся отдельно выключена (`FEED_ENABLED=false`). Новая база начала отсчёт с нуля;
+адрес счётчика в Unity автоматически не изменён.
+
 Вход работает, но перенос сессии между стандартными GitHub-hosted runners
 не проходит: следующий запуск получает `401 Missing Credentials` до чтения друзей.
 В [проверке на одном runner](https://github.com/korichneviykakiish/5ul-calendar-feed/actions/runs/40390434274)
