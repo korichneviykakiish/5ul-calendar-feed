@@ -167,6 +167,33 @@ class AuthenticationTests(unittest.TestCase):
         self.session.get.assert_called_once()
         self.session.post.assert_not_called()
 
+    def test_login_failure_classification_never_echoes_response(self):
+        self.assertEqual(fetch_events.login_failure_reason(self.response(
+            {"error": {"message": "Invalid Username/Email or Password"}})), "invalid-credentials")
+        for body in ({"error": {"message": "sensitive-response"}}, ["sensitive-response"], None):
+            self.assertEqual(fetch_events.login_failure_reason(self.response(body)),
+                             "unclassified-auth-rejection")
+        response = self.response(None)
+        response.json.side_effect = ValueError("not JSON")
+        self.assertEqual(fetch_events.login_failure_reason(response), "non-json-response")
+
+    def test_pasted_newlines_are_rejected_without_password_request(self):
+        for name, value in (("USERNAME", "test-bot\n"), ("USERNAME", " test-bot "),
+                            ("PASSWORD", "test-password\r\n")):
+            with self.subTest(field=name), patch.object(fetch_events, name, value):
+                with self.assertRaises(SystemExit):
+                    fetch_events.login(self.session, "request-email")
+        self.session.get.assert_not_called()
+
+    def test_special_characters_are_encoded_once_and_password_spaces_preserved(self):
+        self.session.get.return_value = self.response({"id": "usr_test-bot"})
+        with patch.object(fetch_events, "USERNAME", "bot@example.com"), \
+                patch.object(fetch_events, "PASSWORD", " a+b:c%/@ "):
+            self.assertTrue(fetch_events.login(self.session, "request-email"))
+        header = self.session.get.call_args.kwargs["headers"]["Authorization"]
+        decoded = fetch_events.base64.b64decode(header.removeprefix("Basic ")).decode("ascii")
+        self.assertEqual(decoded, "bot%40example.com:%20a%2Bb%3Ac%25%2F%40%20")
+
     def test_arbitrary_success_response_is_not_an_authenticated_user(self):
         self.session.get.return_value = self.response({"success": True})
         self.assertFalse(fetch_events.session_alive(self.session))

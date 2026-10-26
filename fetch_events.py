@@ -125,6 +125,19 @@ def session_alive(s):
             and str(body.get("id", "")).startswith("usr_"))
 
 
+def login_failure_reason(response):
+    # Classify known responses without putting arbitrary server text in logs.
+    try:
+        body = response.json()
+    except ValueError:
+        return "non-json-response"
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    if isinstance(message, str) and message.strip().casefold() == "invalid username/email or password":
+        return "invalid-credentials"
+    return "unclassified-auth-rejection"
+
+
 def login(s, action="auto"):
     if not USERNAME or not PASSWORD:
         die("VRC_USERNAME/VRC_PASSWORD не заданы (secrets репозитория)")
@@ -149,6 +162,10 @@ def login(s, action="auto"):
     if action != "request-email" and not TOTP_SECRET:
         die("Нужен вход по почте: Run workflow > request-email. "
             "Автоматическая отправка новых писем отключена.")
+    if USERNAME != USERNAME.strip() or "\r" in USERNAME or "\n" in USERNAME:
+        die("VRC_USERNAME содержит лишние пробелы или перенос строки. Исправь секрет, не отправляя его в чат.")
+    if "\r" in PASSWORD or "\n" in PASSWORD:
+        die("VRC_PASSWORD содержит перенос строки. Вставь пароль одной строкой без кавычек.")
     if action == "request-email":
         s.cookies.clear()
     log("логин по паролю (кука отсутствует или протухла)")
@@ -157,7 +174,8 @@ def login(s, action="auto"):
     r = s.get(API + "/auth/user",
               headers={"Authorization": "Basic " + auth}, timeout=30)
     if r.status_code == 401:
-        die("401 на логине: проверь VRC_USERNAME и VRC_PASSWORD бот-аккаунта.")
+        die("HTTP 401: " + login_failure_reason(r) +
+            ". Проверь вход теми же данными на сайте VRChat.")
     r.raise_for_status()
     body = r.json()
     if "requiresTwoFactorAuth" in body:
