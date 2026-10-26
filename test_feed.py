@@ -269,6 +269,53 @@ class AuthenticationTests(unittest.TestCase):
         response.json.side_effect = ValueError("not JSON")
         self.assertEqual(fetch_events.login_failure_reason(response), "non-json-response")
 
+    def test_error_message_accepts_string_error_and_top_level_message(self):
+        for body in ({"error": "Too many requests"}, {"message": "Too many requests"},
+                     {"error": {"message": '"Too many requests"'}}):
+            self.assertEqual(fetch_events.login_failure_reason(self.response(body)), "rate-limited")
+
+    def test_manual_error_detail_is_sanitized_and_opt_in(self):
+        message = ("Please wait before logging in again. test-bot test-password 123456 "
+                   "someone@example.org 203.0.113.1 usr_12345678-1234-1234-1234-123456789abc "
+                   "private-cookie new-private-cookie Bearer private-authorization "
+                   "https://example.org/private\nnext line")
+        response = self.response({"error": {"message": message}, "private": "private-body"}, 429)
+        response.request = Mock(headers={"Cookie": "auth=private-cookie",
+                                         "Authorization": "Bearer private-authorization"})
+        response.cookies = requests.cookies.RequestsCookieJar()
+        response.cookies.set("auth", "new-private-cookie")
+        for action in ("auto", "check-login"):
+            output = io.StringIO()
+            with patch.object(fetch_events, "LOGIN_ACTION", action), redirect_stdout(output):
+                fetch_events.log_auth_diagnostic(response, "password-login")
+            data = output.getvalue()
+            for private in ("test-bot", "test-password", "123456", "someone@example.org",
+                            "203.0.113.1", "usr_", "private-cookie", "new-private-cookie",
+                            "private-authorization", "https://example.org", "private-body"):
+                self.assertNotIn(private, data)
+            self.assertEqual("error_detail" in data, action == "check-login")
+            if action == "check-login":
+                self.assertIn("Please wait before logging in again.", data)
+
+    def test_manual_error_detail_redacts_secret_variants_before_truncation(self):
+        password = "sensitive+password:%/@"
+        totp = "JBSWY3DPEHPK3PXP"
+        encoded = fetch_events.quote(password, safe="")
+        basic = fetch_events.base64.b64encode(("test-bot:" + encoded).encode()).decode()
+        response = self.response({"error": {"message":
+            "Please wait. " + password + " " + encoded + " " + totp + " " + basic}})
+        with patch.object(fetch_events, "PASSWORD", password), patch.object(fetch_events, "TOTP_SECRET", totp):
+            detail = fetch_events.sanitized_auth_error(response)
+        for private in (password, encoded, totp, basic):
+            self.assertNotIn(private, detail)
+        self.assertTrue(detail.startswith("Please wait."))
+
+    def test_manual_error_detail_rejects_large_or_non_json_payloads(self):
+        response = self.response({"error": {"message": "private-message" * 200}})
+        self.assertEqual(fetch_events.sanitized_auth_error(response), "message-unavailable-or-too-long")
+        response.json.side_effect = ValueError("private-body")
+        self.assertEqual(fetch_events.sanitized_auth_error(response), "non-json-response")
+
     def test_diagnostic_does_not_expose_auth_header_or_arbitrary_response_text(self):
         response = self.response({"error": {"message": '"Missing Credentials"'}}, 401)
         response.request = Mock(headers={"Authorization": "Basic private-token"})

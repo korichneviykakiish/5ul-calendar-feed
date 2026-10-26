@@ -23,9 +23,12 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import quote
 
 import pyotp
@@ -126,14 +129,11 @@ def session_alive(s):
             and str(body.get("id", "")).startswith("usr_"))
 
 
-def login_failure_reason(response):
-    # Classify known responses without putting arbitrary server text in logs.
-    try:
-        body = response.json()
-    except ValueError:
-        return "non-json-response"
+def auth_error_message(body):
     error = body.get("error") if isinstance(body, dict) else None
-    message = error.get("message") if isinstance(error, dict) else None
+    message = error.get("message") if isinstance(error, dict) else error
+    if not isinstance(message, str) and isinstance(body, dict):
+        message = body.get("message")
     if isinstance(message, str):
         try:
             unquoted = json.loads(message)
@@ -141,6 +141,18 @@ def login_failure_reason(response):
                 message = unquoted
         except ValueError:
             pass
+        return message
+    return None
+
+
+def login_failure_reason(response):
+    # Classify known responses without putting arbitrary server text in logs.
+    try:
+        body = response.json()
+    except ValueError:
+        return "non-json-response"
+    message = auth_error_message(body)
+    if message is not None:
         known = {
             "invalid username/email or password": "invalid-credentials",
             "invalid credentials": "invalid-credentials",
@@ -156,16 +168,58 @@ def login_failure_reason(response):
     return "unclassified-auth-rejection"
 
 
+def sanitized_auth_error(response):
+    try:
+        message = auth_error_message(response.json())
+    except ValueError:
+        return "non-json-response"
+    if not message or len(message) > 2000:
+        return "message-unavailable-or-too-long"
+    secrets = {USERNAME, PASSWORD, TOTP_SECRET, EMAIL_CODE, CONTACT, SESSION_KEY}
+    if USERNAME and PASSWORD:
+        for credentials in (USERNAME + ":" + PASSWORD,
+                            quote(USERNAME, safe="") + ":" + quote(PASSWORD, safe="")):
+            secrets.add(base64.b64encode(credentials.encode("utf-8")).decode("ascii"))
+    headers = getattr(getattr(response, "request", None), "headers", {})
+    if isinstance(headers, Mapping):
+        authorization = headers.get("Authorization", "")
+        if authorization:
+            secrets.add(authorization)
+            secrets.add(authorization.split(" ", 1)[-1])
+        try:
+            cookies = SimpleCookie(headers.get("Cookie", ""))
+        except CookieError:
+            return "message-withheld-invalid-cookie-header"
+        secrets.update(morsel.value for morsel in cookies.values())
+    cookies = getattr(response, "cookies", None)
+    if isinstance(cookies, requests.cookies.RequestsCookieJar):
+        secrets.update(cookie.value for cookie in cookies)
+    # Redact before truncation so a long secret cannot leak a prefix.
+    for secret in sorted((value for value in secrets if value), key=len, reverse=True):
+        for variant in {secret, quote(secret, safe=""), json.dumps(secret, ensure_ascii=True)[1:-1]}:
+            message = re.sub(re.escape(variant), "[redacted]", message, flags=re.IGNORECASE)
+    for pattern in (
+        r"\bhttps?://\S+", r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b",
+        r"\b(?:\d{1,3}\.){3}\d{1,3}\b", r"\b[0-9a-fA-F:]*:[0-9a-fA-F:]+:[0-9a-fA-F:]*\b",
+        r"\b(?:usr|wrld|grp|auth)_(?:[\w-]|\[redacted\])+", r"\b[\w+/=-]{24,}\b", r"\b\d{6,}\b",
+    ):
+        message = re.sub(pattern, "[redacted]", message)
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in message).split())[:300]
+
+
 def log_auth_diagnostic(response, stage):
-    # Only allowlisted classifications and booleans, never raw bodies or cookies.
-    log("AUTH_DIAGNOSTIC " + json.dumps({
+    diagnostic = {
         "stage": stage,
         "status": response.status_code,
         "reason": login_failure_reason(response),
         "api_response": "x-vrc-api-version" in response.headers,
         "cloudflare_challenge": response.headers.get("cf-mitigated") == "challenge",
         "redirect_count": len(response.history),
-    }))
+    }
+    # An explicit manual check may include one sanitized error field, never the body.
+    if LOGIN_ACTION == "check-login":
+        diagnostic["error_detail"] = sanitized_auth_error(response)
+    log("AUTH_DIAGNOSTIC " + json.dumps(diagnostic))
 
 
 def stop_if_rate_limited(response, stage="authentication"):
