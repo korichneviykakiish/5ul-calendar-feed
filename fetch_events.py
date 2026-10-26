@@ -488,6 +488,16 @@ def main():
     if not authenticate(s, LOGIN_ACTION):
         return
     if LOGIN_ACTION == "check-login":
+        # Check the persisted session in a new HTTP client on the same runner.
+        restored = load_session()
+        request = requests.Request("GET", API + "/auth/user")
+        original_cookie = s.prepare_request(request).headers.get("Cookie", "")
+        restored_cookie = restored.prepare_request(request).headers.get("Cookie", "")
+        log("AUTH_RESTORE_COMPARE " + json.dumps({
+            "cookie_header_unchanged": bool(original_cookie) and original_cookie == restored_cookie,
+        }))
+        if not session_alive(restored):
+            die("AUTH_RESTORE_REJECTED: persisted session failed on the same runner; no retry")
         log("AUTH_CHECK_OK: authenticated session saved; calendar publication skipped")
         return
 

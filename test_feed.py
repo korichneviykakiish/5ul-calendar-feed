@@ -417,13 +417,30 @@ class AuthenticationTests(unittest.TestCase):
                 patch.object(fetch_events, "session_cipher"), \
                 patch.object(fetch_events, "load_session", return_value=self.session), \
                 patch.object(fetch_events, "authenticate", return_value=True) as authenticate, \
+                patch.object(fetch_events, "session_alive", return_value=True) as probe, \
                 patch.object(fetch_events, "collect") as collect, \
                 patch.object(fetch_events, "workflow_output") as output:
             fetch_events.main()
             authenticate.assert_called_once_with(self.session, "check-login")
+            probe.assert_called_once_with(self.session)
             collect.assert_not_called()
             output.assert_called_once_with("publish", "false")
         self.assertEqual(Path("docs/events.json").read_bytes(), before)
+
+    def test_authentication_check_rejects_broken_persisted_session_without_login_retry(self):
+        env = {name: "test-only" for name in (
+            "VRC_USERNAME", "VRC_PASSWORD", "VRC_CONTACT", "VRC_SESSION_KEY")}
+        with patch.dict("os.environ", env, clear=True), \
+                patch.object(fetch_events, "LOGIN_ACTION", "check-login"), \
+                patch.object(fetch_events, "session_cipher"), \
+                patch.object(fetch_events, "load_session", return_value=self.session), \
+                patch.object(fetch_events, "authenticate", return_value=True) as authenticate, \
+                patch.object(fetch_events, "session_alive", return_value=False), \
+                patch.object(fetch_events, "collect") as collect, \
+                redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            fetch_events.main()
+        authenticate.assert_called_once()
+        collect.assert_not_called()
 
     def test_pending_email_does_not_collect_or_overwrite_feed(self):
         env = {name: "test-only" for name in (
