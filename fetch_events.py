@@ -8,8 +8,8 @@
 компактный docs/events.json для GitHub Pages. Мир читает его через
 VRCStringDownloader (*.github.io — доверенный домен String Loading).
 
-Секреты (env): VRC_USERNAME, VRC_PASSWORD, VRC_TOTP_SECRET, VRC_CONTACT.
-Кука сессии хранится в state/cookies.json и переиспользуется между
+Секреты (env): VRC_USERNAME, VRC_PASSWORD, VRC_TOTP_SECRET, VRC_CONTACT,
+VRC_SESSION_KEY. Сессия шифруется в state/cookies.enc и переиспользуется между
 запусками — повторные логины съедают лимит одновременных сессий VRChat.
 
 Правила игры с неофициальным API: внятный User-Agent с контактом,
@@ -30,9 +30,11 @@ from urllib.parse import quote
 import pyotp
 import requests
 
+from session_state import load_cookies, save_cookies, session_cipher
+
 API = "https://api.vrchat.cloud/api/1"
 STATE_DIR = "state"
-COOKIES_PATH = os.path.join(STATE_DIR, "cookies.json")
+COOKIES_PATH = os.path.join(STATE_DIR, "cookies.enc")
 OUT_PATH = os.path.join("docs", "events.json")
 GROUPS_PATH = "groups.json"
 
@@ -40,6 +42,7 @@ USERNAME = os.environ.get("VRC_USERNAME", "")
 PASSWORD = os.environ.get("VRC_PASSWORD", "")
 TOTP_SECRET = os.environ.get("VRC_TOTP_SECRET", "")
 CONTACT = os.environ.get("VRC_CONTACT", "no-contact-set@example.com")
+SESSION_KEY = os.environ.get("VRC_SESSION_KEY", "")
 
 USER_AGENT = "FiveUlCalendarFeed/1.0 " + CONTACT
 
@@ -96,21 +99,17 @@ def clean_text(text, limit, keep_newlines):
 def load_session():
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
-    if os.path.exists(COOKIES_PATH):
-        try:
-            with open(COOKIES_PATH, "r", encoding="utf-8") as f:
-                for name, value in json.load(f).items():
-                    s.cookies.set(name, value, domain="api.vrchat.cloud")
-            log("кука сессии восстановлена из state/")
-        except Exception as e:  # noqa: BLE001 — битый стейт не должен валить фид
-            log("не удалось прочитать куки (" + str(e) + "), логинимся заново")
+    cookies = load_cookies(COOKIES_PATH, SESSION_KEY, USERNAME)
+    for name, value in cookies.items():
+        s.cookies.set(name, value, domain="api.vrchat.cloud")
+    if cookies:
+        log("encrypted session restored")
     return s
 
 
 def save_session(s):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-        json.dump(requests.utils.dict_from_cookiejar(s.cookies), f)
+    save_cookies(COOKIES_PATH, SESSION_KEY, USERNAME,
+                 requests.utils.dict_from_cookiejar(s.cookies))
 
 
 def session_alive(s):
@@ -270,6 +269,11 @@ def content_hash(groups):
 
 
 def main():
+    missing = [name for name in ("VRC_USERNAME", "VRC_PASSWORD", "VRC_TOTP_SECRET", "VRC_CONTACT", "VRC_SESSION_KEY")
+               if not os.environ.get(name, "").strip()]
+    if missing:
+        die("Missing GitHub Secrets: " + ", ".join(missing))
+    session_cipher(SESSION_KEY)
     with open(GROUPS_PATH, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     if not cfg.get("groups"):

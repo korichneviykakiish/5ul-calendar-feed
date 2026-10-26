@@ -2,72 +2,98 @@ name: update-calendar-feed
 
 on:
   schedule:
-    # каждые 30 минут; cron GitHub Actions может опаздывать на 5-15 мин — это нормально
     - cron: "7,37 * * * *"
   workflow_dispatch: {}
   push:
     branches: [main]
-    # правка конфига/скрипта сразу перезапускает фид; коммиты самого бота
-    # (docs/ через GITHUB_TOKEN) новых ранов не порождают — петли нет
     paths:
       - groups.json
       - fetch_events.py
+      - session_state.py
+      - test_feed.py
       - requirements.txt
       - .github/workflows/update.yml
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: calendar-feed
   cancel-in-progress: false
 
 jobs:
-  update:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
 
-      - name: Install deps
+  update:
+    needs: test
+    # Keep the old live calendar untouched until the new account is ready.
+    if: vars.FEED_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Кука сессии VRChat переживает запуски через cache:
-      # каждый ран сохраняет новый кэш, следующий подхватывает свежайший по префиксу.
-      - name: Restore session state
+      - name: Restore encrypted session
         uses: actions/cache/restore@v4
         with:
-          path: state
-          key: vrc-state-${{ github.run_id }}
+          path: state/cookies.enc
+          key: vrc-encrypted-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            vrc-state-
+            vrc-encrypted-v1-
 
-      - name: Fetch events
+      - name: Fetch events with owner's VRChat account
         env:
           VRC_USERNAME: ${{ secrets.VRC_USERNAME }}
           VRC_PASSWORD: ${{ secrets.VRC_PASSWORD }}
           VRC_TOTP_SECRET: ${{ secrets.VRC_TOTP_SECRET }}
           VRC_CONTACT: ${{ secrets.VRC_CONTACT }}
+          VRC_SESSION_KEY: ${{ secrets.VRC_SESSION_KEY }}
         run: python fetch_events.py
 
-      - name: Save session state
-        if: always()
+      - name: Save encrypted session only
+        if: always() && hashFiles('state/cookies.enc') != ''
         uses: actions/cache/save@v4
         with:
-          path: state
-          key: vrc-state-${{ github.run_id }}
+          path: state/cookies.enc
+          key: vrc-encrypted-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Commit feed
         run: |
           if [ -n "$(git status --porcelain docs)" ]; then
             git config user.name "calendar-feed-bot"
             git config user.email "actions@users.noreply.github.com"
-            git add docs
+            git add docs/events.json
             git commit -m "chore: update events feed"
             git push
-          else
-            echo "feed unchanged"
           fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - name: Publish calendar
+        id: deployment
+        uses: actions/deploy-pages@v5
