@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -10,6 +11,19 @@ from cryptography.fernet import Fernet, InvalidToken
 def user_agent(contact):
     # Both jobs reuse one VRChat session and must identify as the same client.
     return "FiveUlCalendarFeed/1.0 " + contact
+
+
+def request_cookie_flags(response):
+    headers = getattr(getattr(response, "request", None), "headers", {})
+    if not isinstance(headers, Mapping):
+        return {"request_headers_available": False}
+    names = [part.strip().partition("=")[0] for part in headers.get("Cookie", "").split(";")]
+    return {
+        "request_headers_available": True,
+        "auth_cookie_count": names.count("auth"),
+        "two_factor_cookie_count": names.count("twoFactorAuth"),
+        "basic_header_sent": headers.get("Authorization", "").startswith("Basic "),
+    }
 
 
 def session_cipher(key):

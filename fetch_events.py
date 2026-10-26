@@ -34,7 +34,7 @@ from urllib.parse import quote
 import pyotp
 import requests
 
-from session_state import load_cookies, save_cookies, session_cipher, user_agent
+from session_state import load_cookies, save_cookies, session_cipher, user_agent, request_cookie_flags
 
 API = "https://api.vrchat.cloud/api/1"
 STATE_DIR = "state"
@@ -120,6 +120,7 @@ def save_session(s):
 
 def session_alive(s):
     r = s.get(API + "/auth/user", timeout=30)
+    log("AUTH_COOKIE_CHECK " + json.dumps({"status": r.status_code, **request_cookie_flags(r)}))
     stop_if_rate_limited(r, "cached-session")
     if r.status_code == 401:
         return False
@@ -289,6 +290,8 @@ def login(s, action="auto"):
         die("HTTP 401: " + login_failure_reason(r) + ". Публикация остановлена.")
     r.raise_for_status()
     body = r.json()
+    if not isinstance(body, dict):
+        die("Unexpected login response; session was not confirmed.")
     if "requiresTwoFactorAuth" in body:
         methods = body["requiresTwoFactorAuth"]
         if "emailOtp" in methods:
@@ -316,6 +319,8 @@ def login(s, action="auto"):
             die("TOTP не принят (HTTP " + str(r2.status_code) + ")")
         if not session_alive(s):
             die("после 2FA сессия так и не поднялась")
+    elif not str(body.get("id", "")).startswith("usr_") or not session_alive(s):
+        die("Login did not produce a reusable authenticated session.")
     save_session(s)
     log("логин успешен, кука сохранена")
     return True

@@ -10,10 +10,20 @@ import requests
 from cryptography.fernet import Fernet
 
 import fetch_events
-from session_state import load_cookies, save_cookies
+from session_state import load_cookies, save_cookies, request_cookie_flags
 
 
 class SessionTests(unittest.TestCase):
+    def test_request_cookie_diagnostics_never_include_values(self):
+        response = Mock(request=Mock(headers={"Cookie": "auth=SECRET; twoFactorAuth=OTHER_SECRET",
+                                               "Authorization": "Basic PRIVATE"}))
+        flags = request_cookie_flags(response)
+        self.assertEqual(flags["auth_cookie_count"], 1)
+        self.assertEqual(flags["two_factor_cookie_count"], 1)
+        self.assertTrue(flags["basic_header_sent"])
+        self.assertNotIn("SECRET", json.dumps(flags))
+        self.assertNotIn("PRIVATE", json.dumps(flags))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -165,8 +175,9 @@ class AuthenticationTests(unittest.TestCase):
         self.session.get.return_value = self.response({"id": "usr_test-bot"})
         with patch.object(fetch_events, "TOTP_SECRET", "JBSWY3DPEHPK3PXP"):
             self.assertTrue(fetch_events.authenticate(self.session, "check-login"))
-        self.session.get.assert_called_once()
-        self.assertIn("Authorization", self.session.get.call_args.kwargs["headers"])
+        self.assertEqual(self.session.get.call_count, 2)
+        self.assertIn("Authorization", self.session.get.call_args_list[0].kwargs["headers"])
+        self.assertNotIn("headers", self.session.get.call_args_list[1].kwargs)
         self.save.assert_called_once()
 
     def test_check_login_reuses_active_session(self):
@@ -360,13 +371,26 @@ class AuthenticationTests(unittest.TestCase):
         with patch.object(fetch_events, "USERNAME", "bot@example.com"), \
                 patch.object(fetch_events, "PASSWORD", " a+b:c%/@ "):
             self.assertTrue(fetch_events.login(self.session, "request-email"))
-        header = self.session.get.call_args.kwargs["headers"]["Authorization"]
+        header = self.session.get.call_args_list[0].kwargs["headers"]["Authorization"]
         decoded = fetch_events.base64.b64decode(header.removeprefix("Basic ")).decode("ascii")
         self.assertEqual(decoded, "bot%40example.com:%20a%2Bb%3Ac%25%2F%40%20")
 
     def test_arbitrary_success_response_is_not_an_authenticated_user(self):
         self.session.get.return_value = self.response({"success": True})
         self.assertFalse(fetch_events.session_alive(self.session))
+
+    def test_login_cannot_save_success_without_a_reusable_session(self):
+        self.session.get.side_effect = [self.response({"id": "usr_test-bot"}), self.response({}, 401)]
+        with self.assertRaises(SystemExit):
+            fetch_events.login(self.session, "request-email")
+        self.save.assert_not_called()
+
+    def test_login_cannot_save_an_unexpected_success_body(self):
+        for body in ({"success": True}, [], {"error": {"message": "private-body"}}):
+            self.session.get.return_value = self.response(body)
+            with self.subTest(body=body), self.assertRaises(SystemExit):
+                fetch_events.login(self.session, "request-email")
+        self.save.assert_not_called()
 
     def test_totp_still_supported(self):
         self.session.get.side_effect = [self.response({"requiresTwoFactorAuth": ["totp"]}),

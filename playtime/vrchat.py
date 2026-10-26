@@ -1,12 +1,13 @@
 """Bounded API reads using an existing session; never automatic password login."""
 
 import time
+import json
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
 
-from session_state import user_agent
+from session_state import user_agent, request_cookie_flags
 
 API = "https://api.vrchat.cloud/api/1"
 
@@ -68,6 +69,10 @@ class Client:
                                             timeout=(10, 25), allow_redirects=False)
         except requests.RequestException:
             raise ApiFailure("network_error", operation=operation) from None
+        if operation == "verify-session":
+            print("[playtime] SESSION_REQUEST " + json.dumps({
+                "status": response.status_code, **request_cookie_flags(response),
+            }))
         if response.status_code == 429:
             raise ApiFailure("rate_limited", retry_delay(response.headers.get("Retry-After", "")),
                              operation, 429, auth_reason(response))

@@ -187,6 +187,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.session.headers["User-Agent"], user_agent("test@example.com"))
         self.assertEqual(user_agent("test@example.com"), "FiveUlCalendarFeed/1.0 test@example.com")
 
+    def test_restored_cookies_are_attached_to_actual_request(self):
+        client = Client({"auth": "example", "twoFactorAuth": "second"}, "test@example.com")
+        request = client.session.prepare_request(requests.Request("GET", "https://api.vrchat.cloud/api/1/auth/user"))
+        self.assertEqual(request.headers["Cookie"], "auth=example; twoFactorAuth=second")
+        self.assertNotIn("Authorization", request.headers)
+
     def test_verify_requires_valid_user_id(self):
         for body in ({}, {"id": "other"}, {"id": None}, []):
             with self.subTest(body=body):
