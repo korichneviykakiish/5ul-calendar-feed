@@ -8,8 +8,9 @@
 компактный docs/events.json для GitHub Pages. Мир читает его через
 VRCStringDownloader (*.github.io — доверенный домен String Loading).
 
-Секреты (env): VRC_USERNAME, VRC_PASSWORD, VRC_TOTP_SECRET, VRC_CONTACT,
-VRC_SESSION_KEY. Сессия шифруется в state/cookies.enc и переиспользуется между
+Секреты (env): VRC_USERNAME, VRC_PASSWORD, VRC_CONTACT, VRC_SESSION_KEY.
+VRC_TOTP_SECRET необязателен; без него вход подтверждается VRC_EMAIL_CODE.
+Сессия шифруется в state/cookies.enc и переиспользуется между
 запусками — повторные логины съедают лимит одновременных сессий VRChat.
 
 Правила игры с неофициальным API: внятный User-Agent с контактом,
@@ -41,6 +42,8 @@ GROUPS_PATH = "groups.json"
 USERNAME = os.environ.get("VRC_USERNAME", "")
 PASSWORD = os.environ.get("VRC_PASSWORD", "")
 TOTP_SECRET = os.environ.get("VRC_TOTP_SECRET", "")
+EMAIL_CODE = os.environ.get("VRC_EMAIL_CODE", "").strip()
+LOGIN_ACTION = os.environ.get("VRC_LOGIN_ACTION", "auto") or "auto"
 CONTACT = os.environ.get("VRC_CONTACT", "no-contact-set@example.com")
 SESSION_KEY = os.environ.get("VRC_SESSION_KEY", "")
 
@@ -114,40 +117,98 @@ def save_session(s):
 
 def session_alive(s):
     r = s.get(API + "/auth/user", timeout=30)
-    if r.status_code != 200:
+    if r.status_code == 401:
         return False
+    r.raise_for_status()
     body = r.json()
-    return "requiresTwoFactorAuth" not in body
+    return (isinstance(body, dict) and "requiresTwoFactorAuth" not in body
+            and str(body.get("id", "")).startswith("usr_"))
 
 
-def login(s):
+def login(s, action="auto"):
     if not USERNAME or not PASSWORD:
         die("VRC_USERNAME/VRC_PASSWORD не заданы (secrets репозитория)")
+
+    if action == "verify-email":
+        # Continue the cached challenge without another password login/email.
+        if not requests.utils.dict_from_cookiejar(s.cookies).get("auth"):
+            die("Нет сохранённого входа. Сначала запусти request-email.")
+        if len(EMAIL_CODE) != 6 or not EMAIL_CODE.isascii() or not EMAIL_CODE.isdigit():
+            die("Добавь шестизначный код из письма в GitHub Secret VRC_EMAIL_CODE.")
+        r = s.post(API + "/auth/twofactorauth/emailotp/verify",
+                   json={"code": EMAIL_CODE}, timeout=30)
+        if r.status_code != 200 or r.json().get("verified") is not True:
+            die("Код из письма не принят (HTTP " + str(r.status_code) +
+                "). Проверь последний код; если истёк, запусти request-email.")
+        if not session_alive(s):
+            die("Код принят, но сессия не подтверждена. Публикация остановлена.")
+        save_session(s)
+        log("email verification successful; encrypted session saved")
+        return True
+
+    if action != "request-email" and not TOTP_SECRET:
+        die("Нужен вход по почте: Run workflow > request-email. "
+            "Автоматическая отправка новых писем отключена.")
+    if action == "request-email":
+        s.cookies.clear()
     log("логин по паролю (кука отсутствует или протухла)")
     creds = quote(USERNAME, safe="") + ":" + quote(PASSWORD, safe="")
     auth = base64.b64encode(creds.encode("utf-8")).decode("ascii")
     r = s.get(API + "/auth/user",
               headers={"Authorization": "Basic " + auth}, timeout=30)
     if r.status_code == 401:
-        die("401 на логине — неверные логин/пароль или Cloudflare-блок: " + r.text[:200])
+        die("401 на логине: проверь VRC_USERNAME и VRC_PASSWORD бот-аккаунта.")
     r.raise_for_status()
     body = r.json()
     if "requiresTwoFactorAuth" in body:
         methods = body["requiresTwoFactorAuth"]
-        if "totp" not in methods and "otp" not in methods:
-            die("аккаунт требует 2FA методом " + str(methods) +
-                " — включите TOTP (authenticator app) и положите секрет в VRC_TOTP_SECRET")
+        if "emailOtp" in methods:
+            if not requests.utils.dict_from_cookiejar(s.cookies).get("auth"):
+                die("VRChat не вернул сессию для кода из письма; публикация остановлена.")
+            save_session(s)
+            message = ("VRChat запросил код из письма. Добавь его в Repository secret "
+                       "VRC_EMAIL_CODE и запусти Run workflow > verify-email. "
+                       "Код не вводить в чат, файлы или поля Run workflow.")
+            log("EMAIL_VERIFICATION_REQUIRED: " + message)
+            summary = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary:
+                with open(summary, "a", encoding="utf-8") as stream:
+                    stream.write("## Подтверждение входа по почте\n\n" + message + "\n")
+            return False
+        if "totp" not in methods:
+            die("Требуется другой способ подтверждения аккаунта; публикация остановлена.")
         if not TOTP_SECRET:
             die("нужен VRC_TOTP_SECRET (base32-секрет из настройки 2FA)")
         code = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
         r2 = s.post(API + "/auth/twofactorauth/totp/verify",
                     json={"code": code}, timeout=30)
         if r2.status_code != 200:
-            die("TOTP не принят: " + r2.text[:200])
+            die("TOTP не принят (HTTP " + str(r2.status_code) + ")")
         if not session_alive(s):
             die("после 2FA сессия так и не поднялась")
     save_session(s)
     log("логин успешен, кука сохранена")
+    return True
+
+
+def authenticate(s, action):
+    if action not in ("auto", "request-email", "verify-email"):
+        die("Неизвестный режим входа.")
+    # Verify first: probing /auth/user must not replace the pending challenge.
+    if action == "verify-email":
+        return login(s, action)
+    if session_alive(s):
+        log("сессия жива, логин не нужен")
+        save_session(s)
+        return True
+    return login(s, action)
+
+
+def workflow_output(name, value):
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(name + "=" + value + "\n")
 
 
 # ------------------------------------------------------------- календарь --
@@ -201,7 +262,8 @@ def collect(s, cfg):
                 if relogged:
                     die("401 повторился после релогина")
                 relogged = True
-                login(s)
+                if not login(s):
+                    die("Сбор остановлен до подтверждения входа; старый фид сохранён.")
                 results = fetch_group_month(s, gid, month)
                 if results is None:
                     die("401 сразу после успешного логина")
@@ -269,7 +331,8 @@ def content_hash(groups):
 
 
 def main():
-    missing = [name for name in ("VRC_USERNAME", "VRC_PASSWORD", "VRC_TOTP_SECRET", "VRC_CONTACT", "VRC_SESSION_KEY")
+    workflow_output("publish", "false")
+    missing = [name for name in ("VRC_USERNAME", "VRC_PASSWORD", "VRC_CONTACT", "VRC_SESSION_KEY")
                if not os.environ.get(name, "").strip()]
     if missing:
         die("Missing GitHub Secrets: " + ", ".join(missing))
@@ -280,11 +343,8 @@ def main():
         die("groups.json пуст — добавьте хотя бы одну группу")
 
     s = load_session()
-    if not session_alive(s):
-        login(s)
-    else:
-        log("сессия жива, логин не нужен")
-        save_session(s)
+    if not authenticate(s, LOGIN_ACTION):
+        return
 
     groups = collect(s, cfg)
     now_unix = int(time.time())
@@ -300,6 +360,7 @@ def main():
             fresh = now_unix - int(old.get("gen", 0)) < HEARTBEAT.total_seconds()
             if same and fresh:
                 log("изменений нет, heartbeat свежий — файл не переписываем")
+                workflow_output("publish", "true")
                 return
         except Exception:  # noqa: BLE001
             pass
@@ -310,6 +371,7 @@ def main():
     total = sum(len(g["events"]) for g in groups)
     log("записан " + OUT_PATH + ": групп " + str(len(groups)) +
         ", событий " + str(total))
+    workflow_output("publish", "true")
 
 
 if __name__ == "__main__":

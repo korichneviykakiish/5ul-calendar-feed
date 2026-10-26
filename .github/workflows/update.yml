@@ -3,7 +3,16 @@ name: update-calendar-feed
 on:
   schedule:
     - cron: "7,37 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      login_action:
+        description: "auto: update; request-email: send code; verify-email: use VRC_EMAIL_CODE secret"
+        type: choice
+        default: auto
+        options:
+          - auto
+          - request-email
+          - verify-email
   push:
     branches: [main]
     paths:
@@ -38,7 +47,7 @@ jobs:
   update:
     needs: test
     # Keep the old live calendar untouched until the new account is ready.
-    if: vars.FEED_ENABLED == 'true'
+    if: vars.FEED_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.login_action != 'auto')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -65,10 +74,13 @@ jobs:
             vrc-encrypted-v1-
 
       - name: Fetch events with owner's VRChat account
+        id: fetch
         env:
           VRC_USERNAME: ${{ secrets.VRC_USERNAME }}
           VRC_PASSWORD: ${{ secrets.VRC_PASSWORD }}
           VRC_TOTP_SECRET: ${{ secrets.VRC_TOTP_SECRET }}
+          VRC_EMAIL_CODE: ${{ secrets.VRC_EMAIL_CODE }}
+          VRC_LOGIN_ACTION: ${{ inputs.login_action || 'auto' }}
           VRC_CONTACT: ${{ secrets.VRC_CONTACT }}
           VRC_SESSION_KEY: ${{ secrets.VRC_SESSION_KEY }}
         run: python fetch_events.py
@@ -81,6 +93,7 @@ jobs:
           key: vrc-encrypted-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Commit feed
+        if: steps.fetch.outputs.publish == 'true'
         run: |
           if [ -n "$(git status --porcelain docs)" ]; then
             git config user.name "calendar-feed-bot"
@@ -91,9 +104,12 @@ jobs:
           fi
 
       - uses: actions/configure-pages@v5
+        if: steps.fetch.outputs.publish == 'true'
       - uses: actions/upload-pages-artifact@v3
+        if: steps.fetch.outputs.publish == 'true'
         with:
           path: docs
       - name: Publish calendar
+        if: steps.fetch.outputs.publish == 'true'
         id: deployment
         uses: actions/deploy-pages@v5

@@ -1,9 +1,12 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import requests
 from cryptography.fernet import Fernet
 
 import fetch_events
@@ -68,6 +71,128 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(fetch_events.clean_text("abc\nxyz", 80, False), "abc xyz")
         self.assertEqual(len(fetch_events.clean_text("x" * 400, 280, True)), 280)
         self.assertEqual(fetch_events.parse_iso("2026-10-26T10:00:00.000Z").utcoffset().total_seconds(), 0)
+
+
+class AuthenticationTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict("os.environ", {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name, value in {"USERNAME": "test-bot", "PASSWORD": "test-password",
+                            "TOTP_SECRET": "", "EMAIL_CODE": "123456"}.items():
+            item = patch.object(fetch_events, name, value)
+            item.start()
+            self.addCleanup(item.stop)
+        self.session = requests.Session()
+        self.session.cookies.set("auth", "pending-test-cookie", domain="api.vrchat.cloud")
+        self.session.get = Mock()
+        self.session.post = Mock()
+        item = patch.object(fetch_events, "save_session")
+        self.save = item.start()
+        self.addCleanup(item.stop)
+
+    @staticmethod
+    def response(body, status=200):
+        response = Mock(status_code=status)
+        response.json.return_value = body
+        if status >= 400:
+            response.raise_for_status.side_effect = requests.HTTPError("test HTTP error")
+        return response
+
+    def test_request_email_preserves_challenge_without_using_code(self):
+        def respond(url, **kwargs):
+            if "headers" not in kwargs:
+                return self.response({}, 401)
+            self.session.cookies.set("auth", "new-pending-cookie", domain="api.vrchat.cloud")
+            return self.response({"requiresTwoFactorAuth": ["emailOtp"]})
+        self.session.get.side_effect = respond
+        self.assertFalse(fetch_events.authenticate(self.session, "request-email"))
+        self.save.assert_called_once_with(self.session)
+        self.session.post.assert_not_called()
+        self.assertIn("Authorization", self.session.get.call_args.kwargs["headers"])
+
+    def test_verify_uses_cached_challenge_before_get_without_password_login(self):
+        self.session.post.return_value = self.response({"verified": True})
+        self.session.get.return_value = self.response({"id": "usr_test-bot"})
+        self.assertTrue(fetch_events.authenticate(self.session, "verify-email"))
+        self.session.post.assert_called_once_with(
+            fetch_events.API + "/auth/twofactorauth/emailotp/verify", json={"code": "123456"}, timeout=30)
+        self.session.get.assert_called_once_with(fetch_events.API + "/auth/user", timeout=30)
+        self.save.assert_called_once()
+
+    def test_invalid_email_code_never_logs_code_or_server_body(self):
+        self.session.post.return_value = self.response({"verified": False})
+        self.session.post.return_value.text = "private-response-content"
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.authenticate(self.session, "verify-email")
+        self.assertNotIn("123456", output.getvalue())
+        self.assertNotIn("private-response-content", output.getvalue())
+        self.session.get.assert_not_called()
+        self.save.assert_not_called()
+
+    def test_verify_requires_cached_session(self):
+        self.session.cookies.clear()
+        with self.assertRaises(SystemExit):
+            fetch_events.authenticate(self.session, "verify-email")
+        self.session.get.assert_not_called()
+        self.session.post.assert_not_called()
+
+    def test_verify_rejects_malformed_codes_without_network(self):
+        for code in ("", "12345", "1234567", "ABC123", "１２３４５６"):
+            with self.subTest(code=code), patch.object(fetch_events, "EMAIL_CODE", code):
+                with self.assertRaises(SystemExit):
+                    fetch_events.authenticate(self.session, "verify-email")
+        self.session.post.assert_not_called()
+
+    def test_schedule_does_not_send_email_or_reuse_old_code(self):
+        for response in (self.response({}, 401), self.response({"requiresTwoFactorAuth": ["emailOtp"]})):
+            self.session.get.reset_mock()
+            self.session.get.return_value = response
+            with self.assertRaises(SystemExit):
+                fetch_events.authenticate(self.session, "auto")
+            self.session.get.assert_called_once_with(fetch_events.API + "/auth/user", timeout=30)
+            self.session.post.assert_not_called()
+
+    def test_active_session_does_not_need_totp_or_email_code(self):
+        self.session.get.return_value = self.response({"id": "usr_test-bot"})
+        self.assertTrue(fetch_events.authenticate(self.session, "auto"))
+        self.session.post.assert_not_called()
+        self.save.assert_called_once()
+
+    def test_api_outage_does_not_start_another_login(self):
+        self.session.get.return_value = self.response({}, 503)
+        with self.assertRaises(requests.HTTPError):
+            fetch_events.authenticate(self.session, "request-email")
+        self.session.get.assert_called_once()
+        self.session.post.assert_not_called()
+
+    def test_arbitrary_success_response_is_not_an_authenticated_user(self):
+        self.session.get.return_value = self.response({"success": True})
+        self.assertFalse(fetch_events.session_alive(self.session))
+
+    def test_totp_still_supported(self):
+        self.session.get.side_effect = [self.response({"requiresTwoFactorAuth": ["totp"]}),
+                                       self.response({"id": "usr_test-bot"})]
+        self.session.post.return_value = self.response({"verified": True})
+        with patch.object(fetch_events, "TOTP_SECRET", "JBSWY3DPEHPK3PXP"):
+            self.assertTrue(fetch_events.login(self.session))
+        self.assertTrue(self.session.post.call_args.args[0].endswith("/totp/verify"))
+
+    def test_pending_email_does_not_collect_or_overwrite_feed(self):
+        env = {name: "test-only" for name in (
+            "VRC_USERNAME", "VRC_PASSWORD", "VRC_CONTACT", "VRC_SESSION_KEY")}
+        before = Path("docs/events.json").read_bytes()
+        with patch.dict("os.environ", env, clear=True), \
+                patch.object(fetch_events, "session_cipher"), \
+                patch.object(fetch_events, "load_session", return_value=self.session), \
+                patch.object(fetch_events, "authenticate", return_value=False), \
+                patch.object(fetch_events, "collect") as collect, \
+                patch.object(fetch_events, "workflow_output") as output:
+            fetch_events.main()
+            collect.assert_not_called()
+            output.assert_called_once_with("publish", "false")
+        self.assertEqual(Path("docs/events.json").read_bytes(), before)
 
 
 if __name__ == "__main__":
