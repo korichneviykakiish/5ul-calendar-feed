@@ -57,6 +57,8 @@ The tracker deliberately has no access to `VRC_PASSWORD`.
    This does not send any VRChat request.
 2. Authenticate using the existing `update-calendar-feed` workflow: `request-email`, then, if
    challenged, put the email code in the `VRC_EMAIL_CODE` repository secret and run `verify-email`.
+   With `VRC_TOTP_SECRET` configured, use `check-login` instead. It authenticates and caches
+   the encrypted session without requesting calendar events or publishing the calendar.
    Never put passwords or codes in workflow inputs, issues, source files or chat messages.
 3. After a successful login, run `publish-playtime` with `action=resume`. It adopts the encrypted
    session from the login workflow and checks friends. It does not attempt a password login.

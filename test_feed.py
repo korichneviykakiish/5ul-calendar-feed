@@ -93,7 +93,7 @@ class AuthenticationTests(unittest.TestCase):
 
     @staticmethod
     def response(body, status=200):
-        response = Mock(status_code=status)
+        response = Mock(status_code=status, headers={}, history=[])
         response.json.return_value = body
         if status >= 400:
             response.raise_for_status.side_effect = requests.HTTPError("test HTTP error")
@@ -160,6 +160,34 @@ class AuthenticationTests(unittest.TestCase):
         self.session.post.assert_not_called()
         self.save.assert_called_once()
 
+    def test_no_session_skips_unauthenticated_probe(self):
+        self.session.cookies.clear()
+        self.session.get.return_value = self.response({"id": "usr_test-bot"})
+        with patch.object(fetch_events, "TOTP_SECRET", "JBSWY3DPEHPK3PXP"):
+            self.assertTrue(fetch_events.authenticate(self.session, "check-login"))
+        self.session.get.assert_called_once()
+        self.assertIn("Authorization", self.session.get.call_args.kwargs["headers"])
+        self.save.assert_called_once()
+
+    def test_check_login_reuses_active_session(self):
+        self.session.get.return_value = self.response({"id": "usr_test-bot"})
+        self.assertTrue(fetch_events.authenticate(self.session, "check-login"))
+        self.session.get.assert_called_once_with(fetch_events.API + "/auth/user", timeout=30)
+        self.session.post.assert_not_called()
+
+    def test_cached_session_limit_never_starts_password_login(self):
+        self.session.get.return_value = self.response(
+            {"error": {"message": "Created too many sessions for that user"}}, 429)
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.authenticate(self.session, "check-login")
+        self.session.get.assert_called_once_with(fetch_events.API + "/auth/user", timeout=30)
+        self.session.post.assert_not_called()
+        self.save.assert_not_called()
+        self.assertIn('"stage": "cached-session"', output.getvalue())
+        self.assertIn('"reason": "session-limit"', output.getvalue())
+        self.assertNotIn("pending-test-cookie", output.getvalue())
+
     def test_api_outage_does_not_start_another_login(self):
         self.session.get.return_value = self.response({}, 503)
         with self.assertRaises(requests.HTTPError):
@@ -188,6 +216,44 @@ class AuthenticationTests(unittest.TestCase):
             fetch_events.stop_if_rate_limited(response)
         self.assertIn("Срок снятия ограничения сервер не указал", output.getvalue())
         self.assertNotIn("untrusted-server-text", output.getvalue())
+
+    def test_rate_limit_classifies_only_known_messages(self):
+        cases = [
+            ("Created too many sessions for that user", "session-limit"),
+            ('"Created too many sessions for that user"', "session-limit"),
+            ("Too many login attempts", "rate-limited"),
+            ("Too many requests", "rate-limited"),
+            ("private-token test-password", "unclassified-auth-rejection"),
+        ]
+        for message, reason in cases:
+            with self.subTest(reason=reason):
+                response = self.response({"error": {"message": message}}, 429)
+                response.headers = {"Set-Cookie": "auth=private-token", "x-vrc-api-version": "test"}
+                self.session.get.reset_mock()
+                self.session.get.return_value = response
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(SystemExit):
+                    fetch_events.login(self.session, "request-email")
+                self.assertIn('"reason": "' + reason + '"', output.getvalue())
+                self.assertIn('"stage": "password-login"', output.getvalue())
+                for secret in ("private-token", "test-password", "pending-test-cookie"):
+                    self.assertNotIn(secret, output.getvalue())
+                self.session.get.assert_called_once()
+                self.session.post.assert_not_called()
+                self.save.assert_not_called()
+
+    def test_non_json_limit_is_not_assumed_to_be_account_or_ip_limit(self):
+        response = self.response(None, 429)
+        response.json.side_effect = ValueError("private-body")
+        response.headers = {"cf-mitigated": "challenge", "Retry-After": "untrusted"}
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.stop_if_rate_limited(response, "password-login")
+        self.assertIn('"reason": "non-json-response"', output.getvalue())
+        self.assertIn('"cloudflare_challenge": true', output.getvalue())
+        self.assertIn("не установлена", output.getvalue())
+        self.assertNotIn("private-body", output.getvalue())
+        self.assertNotIn("untrusted", output.getvalue())
 
     def test_login_failure_classification_never_echoes_response(self):
         self.assertEqual(fetch_events.login_failure_reason(self.response(
@@ -246,6 +312,31 @@ class AuthenticationTests(unittest.TestCase):
         with patch.object(fetch_events, "TOTP_SECRET", "JBSWY3DPEHPK3PXP"):
             self.assertTrue(fetch_events.login(self.session))
         self.assertTrue(self.session.post.call_args.args[0].endswith("/totp/verify"))
+
+    def test_totp_rejection_cannot_save_an_authenticated_session(self):
+        self.session.get.return_value = self.response({"requiresTwoFactorAuth": ["totp"]})
+        self.session.post.return_value = self.response({"verified": False})
+        with patch.object(fetch_events, "TOTP_SECRET", "JBSWY3DPEHPK3PXP"), self.assertRaises(SystemExit):
+            fetch_events.login(self.session)
+        self.session.get.assert_called_once()
+        self.save.assert_not_called()
+
+    def test_authentication_check_never_collects_or_publishes_calendar(self):
+        env = {name: "test-only" for name in (
+            "VRC_USERNAME", "VRC_PASSWORD", "VRC_CONTACT", "VRC_SESSION_KEY")}
+        before = Path("docs/events.json").read_bytes()
+        with patch.dict("os.environ", env, clear=True), \
+                patch.object(fetch_events, "LOGIN_ACTION", "check-login"), \
+                patch.object(fetch_events, "session_cipher"), \
+                patch.object(fetch_events, "load_session", return_value=self.session), \
+                patch.object(fetch_events, "authenticate", return_value=True) as authenticate, \
+                patch.object(fetch_events, "collect") as collect, \
+                patch.object(fetch_events, "workflow_output") as output:
+            fetch_events.main()
+            authenticate.assert_called_once_with(self.session, "check-login")
+            collect.assert_not_called()
+            output.assert_called_once_with("publish", "false")
+        self.assertEqual(Path("docs/events.json").read_bytes(), before)
 
     def test_pending_email_does_not_collect_or_overwrite_feed(self):
         env = {name: "test-only" for name in (

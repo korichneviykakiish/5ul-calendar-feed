@@ -117,6 +117,7 @@ def save_session(s):
 
 def session_alive(s):
     r = s.get(API + "/auth/user", timeout=30)
+    stop_if_rate_limited(r, "cached-session")
     if r.status_code == 401:
         return False
     r.raise_for_status()
@@ -147,19 +148,40 @@ def login_failure_reason(response):
             "too many requests": "rate-limited",
             "too many login attempts": "rate-limited",
             "too many sessions": "session-limit",
+            "created too many sessions for that user": "session-limit",
+            "created too many sessions for this user": "session-limit",
             "unauthorized": "unauthorized",
         }
         return known.get(message.strip().rstrip(".").casefold(), "unclassified-auth-rejection")
     return "unclassified-auth-rejection"
 
 
-def stop_if_rate_limited(response):
+def log_auth_diagnostic(response, stage):
+    # Only allowlisted classifications and booleans, never raw bodies or cookies.
+    log("AUTH_DIAGNOSTIC " + json.dumps({
+        "stage": stage,
+        "status": response.status_code,
+        "reason": login_failure_reason(response),
+        "api_response": "x-vrc-api-version" in response.headers,
+        "cloudflare_challenge": response.headers.get("cf-mitigated") == "challenge",
+        "redirect_count": len(response.history),
+    }))
+
+
+def stop_if_rate_limited(response, stage="authentication"):
     if response.status_code != 429:
         return
+    log_auth_diagnostic(response, stage)
     retry_after = response.headers.get("Retry-After", "")
     delay = (" Минимальная пауза по ответу сервера: " + str(int(retry_after)) + " с."
              if retry_after.isascii() and retry_after.isdigit() else " Срок снятия ограничения сервер не указал.")
-    die("VRChat ограничил частоту входа (HTTP 429). Повторный вход не выполняется." + delay)
+    reasons = {
+        "session-limit": "Сервер сообщил о лимите сессий аккаунта.",
+        "rate-limited": "Сервер сообщил о превышении частоты запросов.",
+    }
+    reason = reasons.get(login_failure_reason(response),
+                         "Точная причина не распознана; привязка к аккаунту или IP не установлена.")
+    die("VRChat отклонил вход (HTTP 429). " + reason + " Повторный вход не выполняется." + delay)
 
 
 def login(s, action="auto"):
@@ -174,7 +196,7 @@ def login(s, action="auto"):
             die("Добавь шестизначный код из письма в GitHub Secret VRC_EMAIL_CODE.")
         r = s.post(API + "/auth/twofactorauth/emailotp/verify",
                    json={"code": EMAIL_CODE}, timeout=30)
-        stop_if_rate_limited(r)
+        stop_if_rate_limited(r, "email-verification")
         if r.status_code != 200 or r.json().get("verified") is not True:
             die("Код из письма не принят (HTTP " + str(r.status_code) +
                 "). Проверь последний код; если истёк, запусти request-email.")
@@ -198,7 +220,7 @@ def login(s, action="auto"):
     auth = base64.b64encode(creds.encode("utf-8")).decode("ascii")
     r = s.get(API + "/auth/user",
               headers={"Authorization": "Basic " + auth}, timeout=30)
-    stop_if_rate_limited(r)
+    stop_if_rate_limited(r, "password-login")
     if r.status_code == 401:
         log("AUTH_DIAGNOSTIC " + json.dumps({
             "reason": login_failure_reason(r),
@@ -233,8 +255,8 @@ def login(s, action="auto"):
         code = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
         r2 = s.post(API + "/auth/twofactorauth/totp/verify",
                     json={"code": code}, timeout=30)
-        stop_if_rate_limited(r2)
-        if r2.status_code != 200:
+        stop_if_rate_limited(r2, "totp-verification")
+        if r2.status_code != 200 or r2.json().get("verified") is not True:
             die("TOTP не принят (HTTP " + str(r2.status_code) + ")")
         if not session_alive(s):
             die("после 2FA сессия так и не поднялась")
@@ -244,12 +266,19 @@ def login(s, action="auto"):
 
 
 def authenticate(s, action):
-    if action not in ("auto", "request-email", "verify-email"):
+    if action not in ("auto", "request-email", "verify-email", "check-login"):
         die("Неизвестный режим входа.")
     # Verify first: probing /auth/user must not replace the pending challenge.
     if action == "verify-email":
         return login(s, action)
-    if session_alive(s):
+    cookies = requests.utils.dict_from_cookiejar(s.cookies)
+    has_auth = bool(cookies.get("auth"))
+    log("AUTH_SESSION_STATE " + json.dumps({
+        "auth_cookie_present": has_auth,
+        "two_factor_cookie_present": bool(cookies.get("twoFactorAuth")),
+    }))
+    # Without a session cookie the probe cannot authenticate and wastes a request.
+    if has_auth and session_alive(s):
         log("сессия жива, логин не нужен")
         save_session(s)
         return True
@@ -396,6 +425,9 @@ def main():
 
     s = load_session()
     if not authenticate(s, LOGIN_ACTION):
+        return
+    if LOGIN_ACTION == "check-login":
+        log("AUTH_CHECK_OK: authenticated session saved; calendar publication skipped")
         return
 
     groups = collect(s, cfg)

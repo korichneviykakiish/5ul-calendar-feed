@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       login_action:
-        description: "auto: update; request-email: send code; verify-email: use VRC_EMAIL_CODE secret"
+        description: "check-login: authenticate only; auto: update; request-email/verify-email: manual email login"
         type: choice
         default: auto
         options:
           - auto
+          - check-login
           - request-email
           - verify-email
   push:
