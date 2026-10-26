@@ -1,0 +1,9 @@
+{
+  "world_id": "wrld_febe4b16-315b-4b3b-9c7f-3ff92ee53e92",
+  "max_gap_seconds": 600,
+  "max_sample_duration_seconds": 120,
+  "max_friend_pages": 100,
+  "max_friend_requests_per_run": 20,
+  "request_spacing_seconds": 2.0,
+  "leaderboard_size": 120
+}

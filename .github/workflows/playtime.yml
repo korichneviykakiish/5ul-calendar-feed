@@ -1,0 +1,75 @@
+name: publish-playtime
+
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'publish: report only; resume: adopt verified session; sample: count friends'
+        type: choice
+        default: publish
+        options: [publish, resume, sample]
+
+permissions:
+  contents: read
+
+# Share the publisher lock with the calendar. Neither job can overwrite the other's feed.
+concurrency:
+  group: calendar-feed
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || vars.PLAYTIME_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Verify accounting and API safety
+        run: python -m unittest discover -s playtime -p 'test_*.py' -v
+      - name: Restore confirmed login if available
+        uses: actions/cache/restore@v4
+        with:
+          path: state/cookies.enc
+          key: vrc-encrypted-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vrc-encrypted-v1-
+      - name: Update encrypted checkpoint and report
+        id: counter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VRC_USERNAME: ${{ secrets.VRC_USERNAME }}
+          VRC_CONTACT: ${{ secrets.VRC_CONTACT }}
+          VRC_SESSION_KEY: ${{ secrets.VRC_SESSION_KEY }}
+          PLAYTIME_ACTION: ${{ inputs.action || 'sample' }}
+        run: python -m playtime.run --action "$PLAYTIME_ACTION"
+      - name: Save public report
+        run: |
+          if [ -n "$(git status --porcelain docs/playtime.json)" ]; then
+            git config user.name 'playtime-report-bot'
+            git config user.email 'actions@users.noreply.github.com'
+            git add docs/playtime.json
+            git commit -m 'chore: publish playtime report'
+            git push origin HEAD:main
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - name: Publish static reports
+        id: deployment
+        uses: actions/deploy-pages@v5

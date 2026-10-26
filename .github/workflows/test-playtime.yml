@@ -1,0 +1,26 @@
+name: test-playtime
+
+on:
+  push:
+    branches: [main]
+    paths: ['playtime/**', '.github/workflows/playtime.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'requirements.txt']
+  pull_request:
+    paths: ['playtime/**', '.github/workflows/playtime.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'requirements.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -v
