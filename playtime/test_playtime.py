@@ -22,7 +22,7 @@ def friend(uid="usr_one", location=WORLD + ":room", name="One"):
 
 
 def response(body, status=200, headers=None):
-    value = Mock(status_code=status, headers=headers or {})
+    value = Mock(status_code=status, headers=headers or {}, history=[])
     value.json.return_value = body
     return value
 
@@ -195,6 +195,12 @@ class ApiTests(unittest.TestCase):
         request = client.session.prepare_request(requests.Request("GET", "https://api.vrchat.cloud/api/1/auth/user"))
         self.assertEqual(request.headers["Cookie"], "auth=example; twoFactorAuth=second")
         self.assertNotIn("Authorization", request.headers)
+
+    def test_logout_ends_only_current_session(self):
+        self.session.request.return_value = response({"success": {"status_code": 200}})
+        self.client.logout()
+        self.assertEqual(self.session.request.call_args.args, ("PUT", "https://api.vrchat.cloud/api/1/logout"))
+        self.assertEqual(list(self.session.cookies), [])
 
     def test_verify_requires_valid_user_id(self):
         for body in ({}, {"id": "other"}, {"id": None}, []):

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'publish: report only; resume: adopt verified session; sample: count friends'
+        description: 'publish: report only; resume: retry login manually; sample: login with TOTP and count'
         type: choice
         default: publish
         options: [publish, resume, sample]
@@ -41,20 +41,16 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Verify accounting and API safety
         run: python -m unittest discover -s playtime -p 'test_*.py' -v
-      - name: Restore confirmed login if available
-        uses: actions/cache/restore@v4
-        with:
-          path: state/cookies.enc
-          key: vrc-encrypted-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            vrc-encrypted-v1-
       - name: Update encrypted checkpoint and report
         id: counter
         env:
           GH_TOKEN: ${{ github.token }}
           VRC_USERNAME: ${{ secrets.VRC_USERNAME }}
+          VRC_PASSWORD: ${{ secrets.VRC_PASSWORD }}
+          VRC_TOTP_SECRET: ${{ secrets.VRC_TOTP_SECRET }}
           VRC_CONTACT: ${{ secrets.VRC_CONTACT }}
           VRC_SESSION_KEY: ${{ secrets.VRC_SESSION_KEY }}
+          VRC_AUTH_PER_RUN: 'true'
           PLAYTIME_ACTION: ${{ inputs.action || 'sample' }}
         run: python -m playtime.run --action "$PLAYTIME_ACTION"
       - name: Save public report

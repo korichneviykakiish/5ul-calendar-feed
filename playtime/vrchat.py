@@ -2,12 +2,10 @@
 
 import time
 import json
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 
 import requests
 
-from session_state import user_agent, request_cookie_flags
+from session_state import user_agent, request_cookie_flags, retry_delay
 
 API = "https://api.vrchat.cloud/api/1"
 
@@ -37,15 +35,6 @@ def auth_reason(response):
         "invalid credentials": "invalid-credentials",
         "logging in from too many places? check your email for verification link": "email-location-verification",
     }.get(message.strip().strip('"').rstrip(".").casefold(), "unclassified")
-
-
-def retry_delay(value):
-    try:
-        if value.isascii() and value.isdigit():
-            return int(value)
-        return max(0, int((parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()))
-    except (ValueError, TypeError, OverflowError):
-        return 0
 
 
 class Client:
@@ -95,6 +84,10 @@ class Client:
         if not isinstance(user, dict) or not str(user.get("id", "")).startswith("usr_"):
             raise ApiFailure("login_required", operation="verify-session", http_status=200,
                              reason="missing-user-id")
+
+    def logout(self):
+        self.call("PUT", "/logout", operation="end-session")
+        self.session.cookies.clear()
 
     def friends(self, max_pages, max_duration):
         started = time.monotonic()

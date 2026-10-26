@@ -3,9 +3,20 @@
 import json
 import os
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+
+
+def retry_delay(value):
+    try:
+        if value.isascii() and value.isdigit():
+            return int(value)
+        return max(0, int((parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()))
+    except (ValueError, TypeError, OverflowError):
+        return 0
 
 
 def user_agent(contact):

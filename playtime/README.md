@@ -27,12 +27,19 @@ Changing rooms within the same world is eligible. Stable VRChat IDs survive disp
 
 Online friends are read in pages of 100 with a two-second pause between API calls. At most
 20 incoming friend requests are accepted per run. Failed, duplicate or incomplete pages never
-become a valid empty snapshot. Requests are bounded; there are no retry loops or password logins.
+become a valid empty snapshot. Requests are bounded; there are no retry loops.
+
+The GitHub workflow explicitly enables `VRC_AUTH_PER_RUN=true`: each eligible run creates one
+fresh session using the bot password and a current TOTP code, samples on that same runner, then
+invalidates only that session with `PUT /logout`. A previous runner's IP-bound cookies are not
+restored. No game client or always-on personal computer is needed. The schedule is still subject
+to GitHub delays and VRChat authentication restrictions; this is not a promise of uninterrupted service.
 
 ## Storage and publication
 
 - `playtime-state-v1` release: authenticated-encrypted checkpoints using `VRC_SESSION_KEY`.
-- Checkpoints contain totals, last observations, run idempotency markers and session cookies.
+- Checkpoints contain totals, last observations and run idempotency markers. Per-run login mode
+  does not retain the disposable runner session in the checkpoint.
 - The two newest checkpoints and one per day for up to seven observed days are retained.
 - Each new checkpoint is uploaded and verified before old files are deleted.
 - Checkpoints are replaceable release assets, not encrypted blobs committed every five minutes.
@@ -50,29 +57,32 @@ or chained restarts to simulate 24/7 hosting. This workflow publishes a static p
 ## Configuration and activation
 
 World ID comes from the current Unity scene blueprint and is in `playtime/config.json`.
-The existing repository secrets `VRC_USERNAME`, `VRC_CONTACT`, `VRC_SESSION_KEY` are reused.
-The tracker deliberately has no access to `VRC_PASSWORD`.
+The workflow reuses repository secrets `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`,
+`VRC_CONTACT`, and `VRC_SESSION_KEY`. The password and TOTP seed are scoped to the sampling
+step's environment; they are never passed in workflow inputs, logs, or the public report.
 
 1. Run `publish-playtime` with `action=publish` to initialize an empty counter and publish the report.
    This does not send any VRChat request.
-2. Authenticate using the existing `update-calendar-feed` workflow: `request-email`, then, if
-   challenged, put the email code in the `VRC_EMAIL_CODE` repository secret and run `verify-email`.
-   With `VRC_TOTP_SECRET` configured, use `check-login` instead. It authenticates and caches
-   the encrypted session without requesting calendar events or publishing the calendar.
-   Never put passwords or codes in workflow inputs, issues, source files or chat messages.
-3. After a successful login, run `publish-playtime` with `action=resume`. It adopts the encrypted
-   session from the login workflow and checks friends. It does not attempt a password login.
+2. Configure the five secrets above. `VRC_TOTP_SECRET` is the permanent authenticator seed,
+   not a six-digit code. Never put passwords or codes in workflow inputs, issues, source, or chat.
+3. Run `publish-playtime` with `action=resume`. It permits one login and sample even after a
+   previous authentication failure, but never overrides a rate-limit deadline. Confirm a second,
+   separate `action=sample` run works before enabling the schedule.
 4. Confirm `status=ok`, the world ID, opt-in profile text, and the published report. Only then set
    the Actions repository variable `PLAYTIME_ENABLED=true` to enable scheduled samples.
 5. Point Unity's Playtime board at the new Pages `playtime.json` when ready. This setup does not
    edit the world or replace its current leaderboard automatically.
 
-`action=publish` only rebuilds a report from saved totals. `sample` samples an already-ready session.
-`resume` is manual and never overrides a persisted rate-limit deadline.
+`action=publish` only rebuilds a report from saved totals. In the GitHub workflow, `sample` does
+one fresh login, sample and logout. `resume` permits a manual recovery attempt, not a retry loop.
+Without `VRC_AUTH_PER_RUN=true`, the old cookie-only mode remains available for a stable host.
 
-On 401/403 the tracker stops automatic requests pending manual recovery. On 429 it stores a
+On a rejected login, additional email confirmation, invalid secrets, or failed session cleanup,
+automatic logins stop pending manual recovery. On 429 it stores a
 cooldown of at least one hour, increasing up to a day, and respects a longer server Retry-After.
-This is our backoff policy, not a promise about when VRChat lifts a restriction. No IP switching.
+The cooldown is checked before sending a password or TOTP. A rate-limited sample does not even
+send a logout request afterwards. This is our backoff policy, not a promise about when VRChat
+lifts a restriction. No IP switching to bypass a rejection.
 Old totals remain intact during errors. The report's `updated` is the last complete sample, not
 the last attempted run. `status` exposes staleness to monitoring without publishing credentials.
 

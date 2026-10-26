@@ -34,7 +34,7 @@ from urllib.parse import quote
 import pyotp
 import requests
 
-from session_state import load_cookies, save_cookies, session_cipher, user_agent, request_cookie_flags
+from session_state import load_cookies, save_cookies, session_cipher, user_agent, request_cookie_flags, retry_delay
 
 API = "https://api.vrchat.cloud/api/1"
 STATE_DIR = "state"
@@ -76,9 +76,17 @@ def log(msg):
     print("[feed] " + msg, flush=True)
 
 
-def die(msg):
+class LoginFailure(SystemExit):
+    def __init__(self, status="login_required", retry_after=0, reason="authentication-rejected"):
+        super().__init__(1)
+        self.status = status
+        self.retry_after = retry_after
+        self.reason = reason
+
+
+def die(msg, status="login_required", retry_after=0, reason="authentication-rejected"):
     log("ОШИБКА: " + msg)
-    sys.exit(1)
+    raise LoginFailure(status, retry_after, reason)
 
 
 def clean_text(text, limit, keep_newlines):
@@ -238,7 +246,10 @@ def stop_if_rate_limited(response, stage="authentication"):
     }
     reason = reasons.get(login_failure_reason(response),
                          "Точная причина не распознана; привязка к аккаунту или IP не установлена.")
-    die("VRChat отклонил вход (HTTP 429). " + reason + " Повторный вход не выполняется." + delay)
+    category = login_failure_reason(response)
+    status = "login_required" if category == "email-location-verification" else "rate_limited"
+    die("VRChat отклонил вход (HTTP 429). " + reason + " Повторный вход не выполняется." + delay,
+        status=status, retry_after=retry_delay(retry_after), reason=category)
 
 
 def login(s, action="auto"):

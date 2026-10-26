@@ -7,11 +7,51 @@ import time
 from pathlib import Path
 
 from session_state import load_cookies
+from .auth import login_client
 from .model import apply_sample, interrupt, leaderboard
 from .storage import Store
 from .vrchat import ApiFailure, Client
 
 BLOCKED = {"waiting_for_login", "login_required", "access_denied"}
+
+
+def process_with_login(state, config, run_number, resume=False, now=None):
+    now = int(time.time()) if now is None else now
+    if run_number <= state["last_run"] or now < state["retry_at"]:
+        print("[playtime] Login skipped: cooldown or already processed run")
+        return state, False
+    if not resume and state["status"] in {"login_required", "access_denied", "configuration_error", "logout_failed"}:
+        print("[playtime] Login needs manual confirmation; no request sent")
+        return state, False
+    try:
+        client = login_client(config["request_spacing_seconds"])
+    except ApiFailure as error:
+        result = interrupt(state, error.status, int(time.time()), error.retry_after)
+        result["last_run"] = run_number
+        result["cookies"] = {}
+        print("[playtime] Login paused: " + json.dumps({
+            "status": error.status, "reason": error.reason, "http_status": error.http_status,
+        }))
+        return result, True
+    result = None
+    try:
+        result, changed = process(state, client, config, run_number, now=now)
+    finally:
+        # Never follow a rate limit or access rejection with another API request.
+        if result is None or result["status"] not in {"rate_limited", "access_denied", "login_required"}:
+            try:
+                client.logout()
+                print("[playtime] Sampling session closed")
+            except ApiFailure as error:
+                if result is not None and error.status != "login_required":
+                    status = "rate_limited" if error.status == "rate_limited" else "logout_failed"
+                    result = interrupt(result, status, int(time.time()), error.retry_after)
+                print("[playtime] Session cleanup: " + error.status + "; no retry")
+    if changed:
+        result["last_run"] = run_number
+        # This job's IP-bound session must not be reused on another runner.
+        result["cookies"] = {}
+    return result, changed
 
 
 def process(state, client, config, run_number, now=None):
@@ -55,7 +95,11 @@ def main():
                   allow_create=not Path("docs/playtime.json").exists())
     state = store.load()
     dirty = state["revision"] == 0
-    if args.action != "publish":
+    if args.action != "publish" and os.environ.get("VRC_AUTH_PER_RUN") == "true":
+        state, sampled = process_with_login(state, config, int(os.environ["GITHUB_RUN_NUMBER"]),
+                                            resume=args.action == "resume")
+        dirty = dirty or sampled
+    elif args.action != "publish":
         # A manual resume may adopt a session confirmed by the calendar login workflow.
         # Neither scheduled sampling nor resume ever sends a username/password login.
         if not state["cookies"].get("auth") or args.action == "resume":
