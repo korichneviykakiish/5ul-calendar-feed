@@ -137,6 +137,9 @@ class AccountingTests(unittest.TestCase):
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        silence = patch("playtime.vrchat.print")
+        silence.start()
+        self.addCleanup(silence.stop)
         self.session = requests.Session()
         self.session.request = Mock()
         self.sleep = Mock()
