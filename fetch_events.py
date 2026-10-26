@@ -153,6 +153,15 @@ def login_failure_reason(response):
     return "unclassified-auth-rejection"
 
 
+def stop_if_rate_limited(response):
+    if response.status_code != 429:
+        return
+    retry_after = response.headers.get("Retry-After", "")
+    delay = (" Минимальная пауза по ответу сервера: " + str(int(retry_after)) + " с."
+             if retry_after.isascii() and retry_after.isdigit() else " Срок снятия ограничения сервер не указал.")
+    die("VRChat ограничил частоту входа (HTTP 429). Повторный вход не выполняется." + delay)
+
+
 def login(s, action="auto"):
     if not USERNAME or not PASSWORD:
         die("VRC_USERNAME/VRC_PASSWORD не заданы (secrets репозитория)")
@@ -165,6 +174,7 @@ def login(s, action="auto"):
             die("Добавь шестизначный код из письма в GitHub Secret VRC_EMAIL_CODE.")
         r = s.post(API + "/auth/twofactorauth/emailotp/verify",
                    json={"code": EMAIL_CODE}, timeout=30)
+        stop_if_rate_limited(r)
         if r.status_code != 200 or r.json().get("verified") is not True:
             die("Код из письма не принят (HTTP " + str(r.status_code) +
                 "). Проверь последний код; если истёк, запусти request-email.")
@@ -188,6 +198,7 @@ def login(s, action="auto"):
     auth = base64.b64encode(creds.encode("utf-8")).decode("ascii")
     r = s.get(API + "/auth/user",
               headers={"Authorization": "Basic " + auth}, timeout=30)
+    stop_if_rate_limited(r)
     if r.status_code == 401:
         log("AUTH_DIAGNOSTIC " + json.dumps({
             "reason": login_failure_reason(r),
@@ -197,8 +208,7 @@ def login(s, action="auto"):
             "api_response": "x-vrc-api-version" in r.headers,
             "cloudflare_challenge": r.headers.get("cf-mitigated") == "challenge",
         }))
-        die("HTTP 401: " + login_failure_reason(r) +
-            ". Проверь вход теми же данными на сайте VRChat.")
+        die("HTTP 401: " + login_failure_reason(r) + ". Публикация остановлена.")
     r.raise_for_status()
     body = r.json()
     if "requiresTwoFactorAuth" in body:
@@ -223,6 +233,7 @@ def login(s, action="auto"):
         code = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
         r2 = s.post(API + "/auth/twofactorauth/totp/verify",
                     json={"code": code}, timeout=30)
+        stop_if_rate_limited(r2)
         if r2.status_code != 200:
             die("TOTP не принят (HTTP " + str(r2.status_code) + ")")
         if not session_alive(s):

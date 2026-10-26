@@ -167,6 +167,28 @@ class AuthenticationTests(unittest.TestCase):
         self.session.get.assert_called_once()
         self.session.post.assert_not_called()
 
+    def test_rate_limited_login_reports_server_delay_without_retry(self):
+        response = self.response({"error": {"message": "private-server-response"}}, 429)
+        response.headers = {"Retry-After": "900"}
+        self.session.get.return_value = response
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.login(self.session, "request-email")
+        self.assertIn("HTTP 429", output.getvalue())
+        self.assertIn("900", output.getvalue())
+        self.assertNotIn("private-server-response", output.getvalue())
+        self.session.get.assert_called_once()
+        self.session.post.assert_not_called()
+
+    def test_rate_limit_without_numeric_delay_does_not_invent_expiry(self):
+        response = self.response({}, 429)
+        response.headers = {"Retry-After": "untrusted-server-text"}
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.stop_if_rate_limited(response)
+        self.assertIn("Срок снятия ограничения сервер не указал", output.getvalue())
+        self.assertNotIn("untrusted-server-text", output.getvalue())
+
     def test_login_failure_classification_never_echoes_response(self):
         self.assertEqual(fetch_events.login_failure_reason(self.response(
             {"error": {"message": "Invalid Username/Email or Password"}})), "invalid-credentials")
