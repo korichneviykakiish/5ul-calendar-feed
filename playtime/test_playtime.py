@@ -224,6 +224,9 @@ class ApiTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
+        silence = patch("playtime.run.print")
+        silence.start()
+        self.addCleanup(silence.stop)
         self.state = apply_sample(new_state("bot", WORLD), [friend()], 1000, 1, 600)
         self.client = Mock()
         self.client.friends.return_value = [friend()]
