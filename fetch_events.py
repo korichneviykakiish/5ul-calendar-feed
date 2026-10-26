@@ -162,6 +162,7 @@ def login_failure_reason(response):
             "too many sessions": "session-limit",
             "created too many sessions for that user": "session-limit",
             "created too many sessions for this user": "session-limit",
+            "logging in from too many places? check your email for verification link": "email-location-verification",
             "unauthorized": "unauthorized",
         }
         return known.get(message.strip().rstrip(".").casefold(), "unclassified-auth-rejection")
@@ -232,6 +233,7 @@ def stop_if_rate_limited(response, stage="authentication"):
     reasons = {
         "session-limit": "Сервер сообщил о лимите сессий аккаунта.",
         "rate-limited": "Сервер сообщил о превышении частоты запросов.",
+        "email-location-verification": "Сервер требует подтвердить место входа ссылкой из письма на почте бот-аккаунта.",
     }
     reason = reasons.get(login_failure_reason(response),
                          "Точная причина не распознана; привязка к аккаунту или IP не установлена.")

@@ -274,6 +274,22 @@ class AuthenticationTests(unittest.TestCase):
                      {"error": {"message": '"Too many requests"'}}):
             self.assertEqual(fetch_events.login_failure_reason(self.response(body)), "rate-limited")
 
+    def test_location_verification_is_not_reported_as_rate_or_session_limit(self):
+        message = "Logging in from too many places? Check your email for verification link"
+        for encoded in (message, json.dumps(message)):
+            response = self.response({"error": {"message": encoded}}, 429)
+            self.assertEqual(fetch_events.login_failure_reason(response), "email-location-verification")
+            self.session.get.reset_mock()
+            self.session.get.return_value = response
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaises(SystemExit):
+                fetch_events.login(self.session, "request-email")
+            self.assertIn("ссылкой из письма", output.getvalue())
+            self.assertNotIn("Точная причина не распознана", output.getvalue())
+            self.session.get.assert_called_once()
+            self.session.post.assert_not_called()
+            self.save.assert_not_called()
+
     def test_manual_error_detail_is_sanitized_and_opt_in(self):
         message = ("Please wait before logging in again. test-bot test-password 123456 "
                    "someone@example.org 203.0.113.1 usr_12345678-1234-1234-1234-123456789abc "
