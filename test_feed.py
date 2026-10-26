@@ -170,12 +170,31 @@ class AuthenticationTests(unittest.TestCase):
     def test_login_failure_classification_never_echoes_response(self):
         self.assertEqual(fetch_events.login_failure_reason(self.response(
             {"error": {"message": "Invalid Username/Email or Password"}})), "invalid-credentials")
+        self.assertEqual(fetch_events.login_failure_reason(self.response(
+            {"error": {"message": '"Invalid Username/Email or Password"'}})), "invalid-credentials")
+        self.assertEqual(fetch_events.login_failure_reason(self.response(
+            {"error": {"message": '"Missing Credentials"'}})), "missing-credentials")
         for body in ({"error": {"message": "sensitive-response"}}, ["sensitive-response"], None):
             self.assertEqual(fetch_events.login_failure_reason(self.response(body)),
                              "unclassified-auth-rejection")
         response = self.response(None)
         response.json.side_effect = ValueError("not JSON")
         self.assertEqual(fetch_events.login_failure_reason(response), "non-json-response")
+
+    def test_diagnostic_does_not_expose_auth_header_or_arbitrary_response_text(self):
+        response = self.response({"error": {"message": '"Missing Credentials"'}}, 401)
+        response.request = Mock(headers={"Authorization": "Basic private-token"})
+        response.url = fetch_events.API + "/auth/user"
+        response.history = []
+        response.headers = {"x-vrc-api-version": "test"}
+        self.session.get.return_value = response
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit):
+            fetch_events.login(self.session, "request-email")
+        for secret in ("private-token", "test-password", "test-bot"):
+            self.assertNotIn(secret, output.getvalue())
+        self.assertIn('"expected_auth_header_sent": false', output.getvalue())
+        self.assertIn("missing-credentials", output.getvalue())
 
     def test_pasted_newlines_are_rejected_without_password_request(self):
         for name, value in (("USERNAME", "test-bot\n"), ("USERNAME", " test-bot "),

@@ -133,8 +133,23 @@ def login_failure_reason(response):
         return "non-json-response"
     error = body.get("error") if isinstance(body, dict) else None
     message = error.get("message") if isinstance(error, dict) else None
-    if isinstance(message, str) and message.strip().casefold() == "invalid username/email or password":
-        return "invalid-credentials"
+    if isinstance(message, str):
+        try:
+            unquoted = json.loads(message)
+            if isinstance(unquoted, str):
+                message = unquoted
+        except ValueError:
+            pass
+        known = {
+            "invalid username/email or password": "invalid-credentials",
+            "invalid credentials": "invalid-credentials",
+            "missing credentials": "missing-credentials",
+            "too many requests": "rate-limited",
+            "too many login attempts": "rate-limited",
+            "too many sessions": "session-limit",
+            "unauthorized": "unauthorized",
+        }
+        return known.get(message.strip().rstrip(".").casefold(), "unclassified-auth-rejection")
     return "unclassified-auth-rejection"
 
 
@@ -174,6 +189,14 @@ def login(s, action="auto"):
     r = s.get(API + "/auth/user",
               headers={"Authorization": "Basic " + auth}, timeout=30)
     if r.status_code == 401:
+        log("AUTH_DIAGNOSTIC " + json.dumps({
+            "reason": login_failure_reason(r),
+            "expected_auth_header_sent": r.request.headers.get("Authorization") == "Basic " + auth,
+            "expected_endpoint": r.url == API + "/auth/user",
+            "redirect_count": len(r.history),
+            "api_response": "x-vrc-api-version" in r.headers,
+            "cloudflare_challenge": r.headers.get("cf-mitigated") == "challenge",
+        }))
         die("HTTP 401: " + login_failure_reason(r) +
             ". Проверь вход теми же данными на сайте VRChat.")
     r.raise_for_status()
