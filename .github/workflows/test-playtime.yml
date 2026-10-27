@@ -3,9 +3,9 @@ name: test-playtime
 on:
   push:
     branches: [main]
-    paths: ['playtime/**', '.github/workflows/playtime.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
+    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
   pull_request:
-    paths: ['playtime/**', '.github/workflows/playtime.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
+    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
   workflow_dispatch:
 
 permissions:

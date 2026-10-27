@@ -68,13 +68,13 @@ class PublicReportTests(unittest.TestCase):
 class PublicationWorkflowTests(unittest.TestCase):
     def test_only_publisher_is_enabled_without_vrchat_credentials(self):
         root = Path(__file__).resolve().parents[1]
-        workflow = (root / ".github/workflows/playtime.yml").read_text(encoding="utf-8")
+        workflow = (root / ".github/workflows/publish-vercel-report.yml").read_text(encoding="utf-8")
         self.assertIn("python -m playtime.publish", workflow)
         self.assertIn("actions/deploy-pages@v5", workflow)
         self.assertIn("schedule:", workflow)
         for forbidden in ("secrets.", "VRC_", "playtime.run", "inputs:", "PLAYTIME_ENABLED"):
             self.assertNotIn(forbidden, workflow)
-        self.assertFalse((root / ".github/workflows/publish-vercel-report.yml").exists())
+        self.assertFalse((root / ".github/workflows/playtime.yml").exists())
 
 
 if __name__ == "__main__":

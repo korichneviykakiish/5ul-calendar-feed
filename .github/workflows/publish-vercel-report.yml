@@ -1,4 +1,4 @@
-name: publish-playtime
+name: publish-vercel-report
 
 on:
   schedule:

@@ -111,7 +111,7 @@ invocations per 30 days, plus monitoring/report readers.
    String Loading trusted-domain rules first: a new Vercel domain is not assumed
    equivalent to the currently trusted GitHub Pages domain. Keeping the old URL
    needs a separate verified publication bridge; this adapter does not provide one.
-   `playtime.yml` now provides that bridge for the existing Pages URL:
+   `publish-vercel-report.yml` provides that bridge for the existing Pages URL:
    it copies only the public sanitized JSON, without credentials or API sampling,
    approximately every five minutes. GitHub scheduling delays affect display
    freshness, not the counter's one-minute operation. Calendar remains unchanged.

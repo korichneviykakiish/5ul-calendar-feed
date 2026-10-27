@@ -19,7 +19,7 @@
 архивные снимки удалены по запросу владельца; старые часы не переносятся.
 
 GitHub больше не входит в VRChat для подсчёта. Единственный workflow
-`publish-playtime` получает публичный JSON Vercel и публикует его на прежнем
+`publish-vercel-report` получает публичный JSON Vercel и публикует его на прежнем
 доверенном адресе для Unity. Он не получает пароль, TOTP или сессию бота.
 Публикация запланирована раз в пять минут, но GitHub может задерживать или
 пропускать запуски. Работу расписания нужно проверять по реальным запускам,
@@ -36,7 +36,7 @@ GitHub больше не входит в VRChat для подсчёта. Еди�
 
 - Игроки добровольно добавляют бот-аккаунт в друзья. В профиле бота нужно заранее
   объяснить, что его друзья участвуют в публичном рейтинге времени на карте.
-- [Управление счётчиком](https://github.com/korichneviykakiish/5ul-calendar-feed/actions/workflows/playtime.yml).
+- [Публикация таблицы](https://github.com/korichneviykakiish/5ul-calendar-feed/actions/workflows/publish-vercel-report.yml).
 - [Новый JSON для доски](https://korichneviykakiish.github.io/5ul-calendar-feed/playtime.json).
 - `Run workflow` только публикует готовую таблицу, не входит в VRChat и не считает часы.
 - Ручное восстановление входа выполняется отдельно на Vercel; автоматических
