@@ -88,6 +88,30 @@ GETs and sampling consume storage/function quotas; verify actual monthly usage
 before promising that a deployment is free. One-minute scheduling is ~43,200
 invocations per 30 days, plus monitoring/report readers.
 
+## External publication clock
+
+When GitHub's native cron does not fire, operator action `publication-schedule`
+configures a separate cron-job.org task for the existing public Pages publisher.
+It uses a dedicated fine-grained `GH_REPORT_DISPATCH_TOKEN` stored as a Vercel
+Production Secret: owner `korichneviykakiish`, only `5ul-calendar-feed`, Actions
+read/write. Do not use the operator's broad Git credential or VRChat credentials.
+
+Setup verifies the account, repository, active workflow and one dispatch before
+creating a disabled job, confirming its identity, and enabling it. Existing managed
+jobs are reused; incomplete listings, duplicates or changed identities stop setup.
+Only this dedicated GitHub token is stored in the publication job's HTTPS request
+header. Its request is a fixed `POST` to `publish-vercel-report.yml`, body
+`{"ref":"main"}`, every five minutes. It cannot sample VRChat or reset hours.
+New tasks notify the scheduler account email on failure/automatic disabling;
+reconfiguration preserves existing notification preferences. Renew the limited
+token before its chosen expiration, then reconfigure the same task.
+
+`publication-status` exposes only safe numeric history. HTTP 204 means GitHub
+accepted a dispatch, not that Pages finished publishing. Verify actual successful
+Actions runs and the public Pages `updated` timestamp. Once two external triggers
+and publication are confirmed, remove the redundant native `on.schedule` entry,
+leaving manual/external dispatch enabled. The minute sampling task is unchanged.
+
 ## Safe cutover
 
 1. Run local unit tests and deploy **disabled**. Keep the current service and data.
