@@ -156,6 +156,13 @@ class MinutePollingTests(unittest.TestCase):
 
 
 class HttpTests(unittest.TestCase):
+    def test_deployment_keeps_file_based_python_functions(self):
+        config = json.loads((Path(__file__).parents[1] / "vercel.json").read_text())
+        self.assertIn("framework", config)
+        self.assertIsNone(config["framework"])
+        self.assertEqual(config["buildCommand"], "")
+        self.assertIn("api/playtime.py", config["functions"])
+
     @patch.dict("os.environ", ENV, clear=True)
     @patch("playtime.serverless.configured_store")
     def test_no_auth_never_opens_storage(self, store):

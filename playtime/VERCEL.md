@@ -44,6 +44,9 @@ corrupt or wrong-account checkpoints stop checks instead of initializing zeroes.
 ## Configuration (production only)
 
 Vercel project: import this repository, Python runtime, no frontend build command.
+`vercel.json` pins `framework: null` (Other) and an empty build command so the
+file-based `api/playtime.py` handler is not mistaken for a framework application
+requiring a root ASGI/WSGI entrypoint. Do not select the Python framework preset.
 Keep Fluid Compute enabled. Add variables securely in Vercel, scoped to Production:
 
 - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`: an owned durable Redis database,
