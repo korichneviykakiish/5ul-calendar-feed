@@ -24,6 +24,12 @@ or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
   an empty counter on the deployed production host. Uses the admin bearer token,
   works while polling is disabled, never calls VRChat and refuses existing state.
   This avoids downloading sensitive production variables for local initialization.
+- Operator actions `schedule` / `schedule-status` configure and inspect only this
+  bot's cron-job.org task. They require the admin token and `CRONJOB_API_KEY` in
+  production. The API key stays in Vercel; the scheduler receives only `CRON_SECRET`.
+  Enabling requires two recent successful polls, reuses an existing managed task,
+  and refuses duplicates or an unrelated task. The job is POST once per minute;
+  no response bodies or administrator credentials are saved by the scheduler.
 
 An encrypted Upstash Redis checkpoint retains the authenticated session across
 invocations. A 330-second ownership-checked lease prevents overlapping workers;

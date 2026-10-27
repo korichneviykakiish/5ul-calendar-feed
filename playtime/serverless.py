@@ -13,6 +13,7 @@ from .model import interrupt, leaderboard, new_state
 from .run import process
 from .serverless_store import RedisStore
 from .vrchat import ApiFailure, Client
+from .scheduler import configure as configure_schedule, status as schedule_status
 
 POLL_SECONDS = 60
 WORK_SECONDS = 18
@@ -94,9 +95,9 @@ def handle(method, authorization="", action="sample"):
     if method not in {"GET", "POST"}:
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
-        if action not in {"sample", "resume", "initialize"}:
+        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status"}:
             return 400, {"status": "invalid_action"}
-        admin_action = action in {"resume", "initialize"}
+        admin_action = action != "sample"
         secret_name = "PLAYTIME_ADMIN_SECRET" if admin_action else "CRON_SECRET"
         secret = os.environ.get(secret_name, "")
         if admin_action and secret == os.environ.get("CRON_SECRET", ""):
@@ -104,7 +105,7 @@ def handle(method, authorization="", action="sample"):
         if not authorized(authorization, secret):
             return 401, {"status": "unauthorized"}
         if (os.environ.get("VERCEL_ENV") != "production"
-                or (action != "initialize" and os.environ.get("PLAYTIME_ENABLED") != "true")):
+                or (action not in {"initialize", "schedule-status"} and os.environ.get("PLAYTIME_ENABLED") != "true")):
             return 503, {"status": "disabled"}
     try:
         config = configuration()
@@ -114,6 +115,10 @@ def handle(method, authorization="", action="sample"):
         if action == "initialize":
             store.initialize(new_state(os.environ["VRC_USERNAME"], config["world_id"]))
             return 200, {"status": "initialized", "sampled": False, "poll_seconds": POLL_SECONDS}
+        if action == "schedule":
+            return 200, configure_schedule(store)
+        if action == "schedule-status":
+            return 200, schedule_status(store)
         result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume")
         # Skips are healthy; an auth/API failure must not masquerade as success.
         healthy = {"ok", "busy", "already_checked"}
