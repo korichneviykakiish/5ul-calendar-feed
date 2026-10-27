@@ -9,6 +9,10 @@ The target is the published world `wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21`,
 as requested by the owner, across all instances visible to the bot. World IDs scope
 separate encrypted checkpoints; changing this setting never merges another world's
 hours or edits a Unity scene's Blueprint ID.
+The owner requested removal of the previous counter. Operator-only action
+`forget-previous-world` removes only that retired world's Redis state/previous
+snapshot under its own lease, refuses the active world, and never deletes Unity
+assets, the VRChat world, credentials, or the external scheduler task.
 Deploying code alone does **not** enable the schedule. Production remains disabled
 unless explicitly configured, initialized and verified. Do not enable paid services
 or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.

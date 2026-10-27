@@ -24,6 +24,12 @@ RELEASE = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 return redis.call('DEL', KEYS[1])
 """
+FORGET = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
+local removed = redis.call('DEL', KEYS[2], KEYS[3])
+redis.call('DEL', KEYS[1])
+return removed
+"""
 
 
 class RedisStore:
@@ -88,6 +94,22 @@ class RedisStore:
     def initialize(self, state):
         if self.command("SET", self.prefix + ":state", self.encode(state), "NX") != "OK":
             raise RuntimeError("Checkpoint already exists; refusing to overwrite hours")
+
+    def forget_world(self, world_id):
+        if world_id == self.world_id or not world_id.startswith("wrld_"):
+            raise ValueError("Cannot remove the active world's counter")
+        identity = hashlib.sha256((self.account.strip().casefold() + "\n" + world_id).encode()).hexdigest()[:24]
+        prefix = "5ul:playtime:" + identity
+        lock, token = prefix + ":lock", secrets.token_hex(24)
+        if self.command("SET", lock, token, "NX", "EX", LEASE_SECONDS) != "OK":
+            raise RuntimeError("Old counter is busy; no data removed")
+        try:
+            removed = self.command("EVAL", FORGET, 3, lock, prefix + ":state", prefix + ":previous", token)
+            if type(removed) is not int or removed < 0:
+                raise RuntimeError("Old counter lease changed; removal not confirmed")
+            return removed
+        finally:
+            self.command("EVAL", RELEASE, 1, lock, token)
 
     def save(self, state):
         if not self.lease or not self.loaded:

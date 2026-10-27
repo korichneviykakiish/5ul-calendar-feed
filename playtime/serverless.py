@@ -18,6 +18,8 @@ from .scheduler import configure as configure_schedule, status as schedule_statu
 POLL_SECONDS = 60
 WORK_SECONDS = 18
 BLOCKED = {"waiting_for_login", "login_required", "access_denied", "configuration_error", "logout_failed"}
+RETIRED_WORLD_ID = "wrld_febe4b16-315b-4b3b-9c7f-3ff92ee53e92"
+REQUESTED_WORLD_ID = "wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21"
 
 
 def configuration():
@@ -95,7 +97,7 @@ def handle(method, authorization="", action="sample"):
     if method not in {"GET", "POST"}:
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
-        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status"}:
+        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status", "forget-previous-world"}:
             return 400, {"status": "invalid_action"}
         admin_action = action != "sample"
         secret_name = "PLAYTIME_ADMIN_SECRET" if admin_action else "CRON_SECRET"
@@ -105,7 +107,8 @@ def handle(method, authorization="", action="sample"):
         if not authorized(authorization, secret):
             return 401, {"status": "unauthorized"}
         if (os.environ.get("VERCEL_ENV") != "production"
-                or (action not in {"initialize", "schedule-status"} and os.environ.get("PLAYTIME_ENABLED") != "true")):
+                or (action not in {"initialize", "schedule-status", "forget-previous-world"}
+                    and os.environ.get("PLAYTIME_ENABLED") != "true")):
             return 503, {"status": "disabled"}
     try:
         config = configuration()
@@ -115,6 +118,11 @@ def handle(method, authorization="", action="sample"):
         if action == "initialize":
             store.initialize(new_state(os.environ["VRC_USERNAME"], config["world_id"]))
             return 200, {"status": "initialized", "sampled": False, "poll_seconds": POLL_SECONDS}
+        if action == "forget-previous-world":
+            if config["world_id"] != REQUESTED_WORLD_ID:
+                raise ValueError("Activate the requested world before removing the previous counter")
+            removed = store.forget_world(RETIRED_WORLD_ID)
+            return 200, {"status": "previous_world_removed", "deleted_state_keys": removed}
         if action == "schedule":
             return 200, configure_schedule(store)
         if action == "schedule-status":

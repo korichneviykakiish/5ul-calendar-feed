@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 from api.playtime import handler
 from playtime.model import apply_sample, new_state
 from playtime.serverless import handle, initialize_empty, public_report, tick, configuration, configured_store
-from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE
+from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE, FORGET
 from playtime.vrchat import ApiFailure, Client
 
 CONFIG = {**configuration(), "world_id": "wrld_test"}
@@ -180,6 +180,7 @@ class HttpTests(unittest.TestCase):
     @patch("playtime.serverless.configured_store")
     def test_cron_cannot_initialize_or_erase_state(self, store):
         self.assertEqual(handle("POST", "Bearer " + CRON, "initialize")[0], 401)
+        self.assertEqual(handle("POST", "Bearer " + CRON, "forget-previous-world")[0], 401)
         store.assert_not_called()
 
     @patch.dict("os.environ", {**ENV, "PLAYTIME_ENABLED": "false", "VRC_USERNAME": "bot"}, clear=True)
@@ -207,6 +208,23 @@ class HttpTests(unittest.TestCase):
         store.return_value.initialize.side_effect = RuntimeError("already exists")
         self.assertEqual(handle("POST", "Bearer " + ADMIN, "initialize")[0], 503)
         store.return_value.save.assert_not_called()
+
+    @patch.dict("os.environ", {**ENV, "PLAYTIME_ENABLED": "false"}, clear=True)
+    @patch("playtime.serverless.configured_store")
+    def test_operator_removes_only_the_named_previous_world(self, store):
+        store.return_value.forget_world.return_value = 2
+        code, result = handle("POST", "Bearer " + ADMIN, "forget-previous-world")
+        self.assertEqual(code, 200)
+        self.assertEqual(result["deleted_state_keys"], 2)
+        store.return_value.forget_world.assert_called_once_with("wrld_febe4b16-315b-4b3b-9c7f-3ff92ee53e92")
+        store.return_value.initialize.assert_not_called()
+
+    @patch.dict("os.environ", ENV, clear=True)
+    @patch("playtime.serverless.configuration", return_value=CONFIG)
+    @patch("playtime.serverless.configured_store")
+    def test_previous_world_removal_requires_requested_world_to_be_active(self, store, config):
+        self.assertEqual(handle("POST", "Bearer " + ADMIN, "forget-previous-world")[0], 503)
+        store.return_value.forget_world.assert_not_called()
 
     @patch.dict("os.environ", {**ENV, "VERCEL_ENV": "preview"}, clear=True)
     @patch("playtime.serverless.configured_store")
@@ -371,6 +389,27 @@ class RedisStoreTests(unittest.TestCase):
         self.store.lease = "owner"
         self.store.release()
         self.store.command.assert_called_once_with("EVAL", RELEASE, 1, self.store.prefix + ":lock", "owner")
+
+    def test_active_world_cannot_be_deleted(self):
+        with self.assertRaises(ValueError):
+            self.store.forget_world("wrld_test")
+        self.store.command.assert_not_called()
+
+    def test_old_world_removal_is_exact_and_fenced(self):
+        self.store.command.side_effect = ["OK", 2, 0]
+        self.assertEqual(self.store.forget_world("wrld_retired"), 2)
+        call = self.store.command.call_args_list[1].args
+        self.assertEqual(call[:3], ("EVAL", FORGET, 3))
+        self.assertTrue(call[3].endswith(":lock"))
+        self.assertTrue(call[4].endswith(":state"))
+        self.assertTrue(call[5].endswith(":previous"))
+        self.assertTrue(all(not key.startswith(self.store.prefix) for key in call[3:6]))
+
+    def test_busy_old_world_is_not_deleted(self):
+        self.store.command.return_value = None
+        with self.assertRaises(RuntimeError):
+            self.store.forget_world("wrld_retired")
+        self.assertEqual(self.store.command.call_count, 1)
 
     def test_redirects_or_error_bodies_never_leak_credentials(self):
         session = Mock(headers={})
