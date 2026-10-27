@@ -66,9 +66,13 @@ class PublicReportTests(unittest.TestCase):
 
 
 class PublicationWorkflowTests(unittest.TestCase):
+    def workflow(self):
+        root = Path(__file__).resolve().parents[1]
+        return (root / ".github/workflows/publish-vercel-report.yml").read_text(encoding="utf-8")
+
     def test_only_publisher_is_enabled_without_vrchat_credentials(self):
         root = Path(__file__).resolve().parents[1]
-        workflow = (root / ".github/workflows/publish-vercel-report.yml").read_text(encoding="utf-8")
+        workflow = self.workflow()
         self.assertIn("python -m playtime.publish", workflow)
         self.assertIn("actions/deploy-pages@v5", workflow)
         self.assertIn("workflow_dispatch:", workflow)
@@ -76,6 +80,29 @@ class PublicationWorkflowTests(unittest.TestCase):
         for forbidden in ("secrets.", "VRC_", "playtime.run", "inputs:", "PLAYTIME_ENABLED"):
             self.assertNotIn(forbidden, workflow)
         self.assertFalse((root / ".github/workflows/playtime.yml").exists())
+
+    def test_pages_retries_only_failed_deployment_once_with_bounded_waits(self):
+        workflow = self.workflow()
+        self.assertEqual(workflow.count("uses: actions/deploy-pages@v5"), 2)
+        self.assertEqual(workflow.count("timeout: 90000"), 2)
+        self.assertEqual(workflow.count("continue-on-error: true"), 1)
+        self.assertIn("id: deployment\n        continue-on-error: true", workflow)
+        self.assertIn("name: Wait before one Pages publication retry\n"
+                      "        if: ${{ steps.deployment.outcome == 'failure' }}\n"
+                      "        run: sleep 20", workflow)
+        self.assertIn("id: deployment_retry\n"
+                      "        if: ${{ steps.deployment.outcome == 'failure' }}\n"
+                      "        uses: actions/deploy-pages@v5", workflow)
+        self.assertIn("group: calendar-feed\n  cancel-in-progress: false", workflow)
+
+    def test_publication_is_not_green_when_both_attempts_fail(self):
+        workflow = self.workflow()
+        self.assertIn("name: Verify Pages publication\n"
+                      "        if: ${{ always() && !cancelled() }}", workflow)
+        self.assertIn('run: test "$PRIMARY_OUTCOME" = success || test "$RETRY_OUTCOME" = success', workflow)
+        self.assertIn("PRIMARY_OUTCOME: ${{ steps.deployment.outcome }}", workflow)
+        self.assertIn("RETRY_OUTCOME: ${{ steps.deployment_retry.outcome }}", workflow)
+        self.assertIn("url: ${{ steps.deployment_retry.outputs.page_url || steps.deployment.outputs.page_url }}", workflow)
 
 
 if __name__ == "__main__":

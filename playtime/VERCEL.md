@@ -132,6 +132,14 @@ Actions runs and the public Pages `updated` timestamp. The redundant native
 `on.schedule` entry is removed, leaving manual/external dispatch enabled. Both
 tasks run once per minute; sampling failures notify the cron-job.org account email.
 
+Pages creation can return a transient server error or report a previous deployment
+still in progress. Only the deployment step gets one retry after 20 seconds, using
+the already uploaded artifact; fetching, committing and VRChat sampling are not
+repeated. Each action has a 90-second deployment timeout, shorter than the five-minute
+job limit, so the action can attempt its normal cancellation before the job is killed.
+The final guard requires one successful deployment; two failures remain a failed run
+with notifications. This does not guarantee recovery during a longer Pages outage.
+
 ### Month-long operation
 
 Neither task has an end date; no month-end reset is performed. Counters and the
