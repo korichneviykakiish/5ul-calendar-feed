@@ -112,21 +112,56 @@ class Client:
         raise ApiFailure("page_limit")
 
     def accept_requests(self, limit):
-        rows = self.call("GET", "/auth/user/notifications",
-                         {"type": "friendRequest", "n": min(100, limit), "offset": 0}, operation="list-requests")
-        if not isinstance(rows, list):
-            raise ApiFailure("invalid_response")
+        if type(limit) is not int or not 0 <= limit <= 100:
+            raise ValueError("Invalid friend request limit")
+        if limit == 0:
+            return 0
+        pending = []
+        seen = set()
+        scanned = 0
+        scan_capped = False
+        # The API's type filter is deprecated. Collect before accepting so our
+        # own removals cannot shift the offsets of unread notification pages.
+        for page in range(5):
+            rows = self.call("GET", "/auth/user/notifications",
+                             {"hidden": "false", "n": 100, "offset": page * 100}, operation="list-requests")
+            if not isinstance(rows, list) or len(rows) > 100:
+                raise ApiFailure("invalid_response", operation="list-requests")
+            scanned += len(rows)
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ApiFailure("invalid_response", operation="list-requests")
+                if row.get("type") != "friendRequest" or row.get("hidden", False):
+                    continue
+                notification = row.get("id", "")
+                if not isinstance(notification, str) or not notification.startswith(("frq_", "not_")):
+                    raise ApiFailure("invalid_response", operation="list-requests")
+                if not all(c.isascii() and (c.isalnum() or c in "_-") for c in notification):
+                    raise ApiFailure("invalid_response", operation="list-requests")
+                if notification not in seen:
+                    seen.add(notification)
+                    pending.append(notification)
+                if len(pending) == limit:
+                    break
+            if len(pending) == limit or len(rows) < 100:
+                break
+        else:
+            scan_capped = True
         accepted = 0
-        for row in rows[:limit]:
-            if not isinstance(row, dict) or row.get("type") != "friendRequest":
-                continue
-            notification = row.get("id", "")
-            if not isinstance(notification, str) or not notification.startswith(("frq_", "not_")):
-                raise ApiFailure("invalid_response")
-            if not all(c.isascii() and (c.isalnum() or c in "_-") for c in notification):
-                raise ApiFailure("invalid_response")
-            self.call("PUT", "/auth/user/notifications/" + notification + "/accept", operation="accept-request")
+        expired = 0
+        for notification in pending:
+            try:
+                self.call("PUT", "/auth/user/notifications/" + notification + "/accept", operation="accept-request")
+            except ApiFailure as failure:
+                if failure.status == "api_error" and failure.http_status == 404:
+                    expired += 1
+                    continue
+                raise
             accepted += 1
+        print("[playtime] Friend request scan: " + json.dumps({
+            "scanned": scanned, "pending": len(pending), "accepted": accepted,
+            "expired": expired, "scan_capped": scan_capped,
+        }))
         return accepted
 
     def cookies(self):

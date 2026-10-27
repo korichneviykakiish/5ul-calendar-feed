@@ -26,8 +26,15 @@ After a failure, two new successful sightings are required before time accrues a
 Changing rooms within the same world is eligible. Stable VRChat IDs survive display-name changes.
 
 Online friends are read in pages of 100 with a two-second pause between API calls. At most
-20 incoming friend requests are accepted per run. Failed, duplicate or incomplete pages never
-become a valid empty snapshot. Requests are bounded; there are no retry loops.
+20 incoming friend requests are accepted per run. Notifications are scanned locally for requests
+in up to five pages of 100: VRChat's deprecated `type` filter is not relied on. All pages needed
+for that batch are read before accepting, so accepting cannot shift the next page's offset.
+Hidden requests are not accepted; duplicate IDs are accepted at most once. A withdrawn request
+(404) is skipped, but authentication, rate-limit and other errors stop the batch without retry.
+The log records counts only, including whether the 500-notification scan cap was reached.
+Older requests beyond that cap require administrator review; notifications are never deleted.
+Failed, duplicate or incomplete friend-list pages never become a valid empty snapshot.
+Requests are bounded; there are no retry loops.
 
 The GitHub workflow explicitly enables `VRC_AUTH_PER_RUN=true`: each eligible run creates one
 fresh session using the bot password and a current TOTP code, samples on that same runner, then

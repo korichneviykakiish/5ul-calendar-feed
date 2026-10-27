@@ -268,6 +268,98 @@ class ApiTests(unittest.TestCase):
             self.client.accept_requests(20)
         self.assertEqual(self.session.request.call_count, 1)
 
+    def test_request_after_twenty_other_notifications_is_accepted(self):
+        rows = [{"type": "invite", "id": "not_other_" + str(i)} for i in range(25)]
+        rows.append({"type": "friendRequest", "id": "frq_later"})
+        self.session.request.side_effect = [response(rows), response({"success": {}})]
+        self.assertEqual(self.client.accept_requests(20), 1)
+        params = self.session.request.call_args_list[0].kwargs["params"]
+        self.assertEqual(params, {"hidden": "false", "n": 100, "offset": 0})
+
+    def test_requests_collected_across_pages_before_acceptance(self):
+        rows = [{"type": "invite", "id": "not_other_" + str(i)} for i in range(99)]
+        rows.append({"type": "friendRequest", "id": "frq_first"})
+        self.session.request.side_effect = [response(rows), response([
+            {"type": "friendRequest", "id": "frq_second"},
+        ]), response({"success": {}}), response({"success": {}})]
+        self.assertEqual(self.client.accept_requests(20), 2)
+        calls = self.session.request.call_args_list
+        self.assertEqual([call.args[0] for call in calls], ["GET", "GET", "PUT", "PUT"])
+        self.assertEqual(calls[1].kwargs["params"]["offset"], 100)
+        self.assertEqual(self.sleep.call_count, 3)
+
+    def test_friend_acceptance_limit_is_not_notification_limit(self):
+        rows = [{"type": "friendRequest", "id": "frq_" + str(i)} for i in range(100)]
+        self.session.request.side_effect = [response(rows)] + [response({"success": {}})] * 20
+        self.assertEqual(self.client.accept_requests(20), 20)
+        self.assertEqual(self.session.request.call_count, 21)
+
+    def test_duplicate_and_hidden_requests_are_not_accepted_twice(self):
+        request = {"type": "friendRequest", "id": "frq_example"}
+        self.session.request.side_effect = [response([
+            request, request, {"type": "friendRequest", "id": "frq_hidden", "hidden": True},
+        ]), response({"success": {}})]
+        self.assertEqual(self.client.accept_requests(20), 1)
+        self.assertEqual(self.session.request.call_count, 2)
+
+    def test_notification_scan_is_bounded_and_logged_without_contents(self):
+        rows = [{"type": "invite", "id": "not_private", "message": "PRIVATE_TEXT"}] * 100
+        self.session.request.return_value = response(rows)
+        with patch("playtime.vrchat.print") as output:
+            self.assertEqual(self.client.accept_requests(20), 0)
+        self.assertEqual(self.session.request.call_count, 5)
+        self.assertEqual(self.session.request.call_args.kwargs["params"]["offset"], 400)
+        message = output.call_args.args[0]
+        diagnostic = json.loads(message.removeprefix("[playtime] Friend request scan: "))
+        self.assertEqual(diagnostic["scanned"], 500)
+        self.assertTrue(diagnostic["scan_capped"])
+        self.assertNotIn("PRIVATE_TEXT", message)
+        self.assertNotIn("not_private", message)
+
+    def test_expired_request_does_not_block_remaining_requests(self):
+        self.session.request.side_effect = [response([
+            {"type": "friendRequest", "id": "frq_expired"},
+            {"type": "friendRequest", "id": "frq_valid"},
+        ]), response({}, 404), response({"success": {}})]
+        with patch("playtime.vrchat.print") as output:
+            self.assertEqual(self.client.accept_requests(20), 1)
+        diagnostic = json.loads(output.call_args.args[0].removeprefix("[playtime] Friend request scan: "))
+        self.assertEqual(diagnostic["expired"], 1)
+        self.assertEqual(diagnostic["accepted"], 1)
+
+    def test_accept_auth_and_rate_failures_stop_without_retry(self):
+        for status in (401, 403, 429, 500):
+            with self.subTest(status=status):
+                self.session.request.reset_mock()
+                self.session.request.side_effect = [response([
+                    {"type": "friendRequest", "id": "frq_first"},
+                    {"type": "friendRequest", "id": "frq_second"},
+                ]), response({}, status)]
+                with self.assertRaises(ApiFailure) as failure:
+                    self.client.accept_requests(20)
+                self.assertEqual(failure.exception.http_status, status)
+                self.assertEqual(self.session.request.call_count, 2)
+
+    def test_invalid_or_failed_later_page_does_not_accept_partial_queue(self):
+        rows = [{"type": "invite"}] * 99 + [{"type": "friendRequest", "id": "frq_first"}]
+        for second in (response({}, 503), response({}), response([None]), response([{}] * 101)):
+            with self.subTest(response=second):
+                self.session.request.reset_mock()
+                self.session.request.side_effect = [response(rows), second]
+                with self.assertRaises(ApiFailure):
+                    self.client.accept_requests(20)
+                self.assertTrue(all(call.args[0] == "GET" for call in self.session.request.call_args_list))
+
+    def test_zero_request_limit_makes_no_calls(self):
+        self.assertEqual(self.client.accept_requests(0), 0)
+        self.session.request.assert_not_called()
+
+    def test_invalid_request_limit_makes_no_calls(self):
+        for limit in (-1, 101, True, "20"):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                self.client.accept_requests(limit)
+        self.session.request.assert_not_called()
+
     def test_retry_after(self):
         self.assertEqual(retry_delay("3600"), 3600)
         self.assertEqual(retry_delay("invalid"), 0)
