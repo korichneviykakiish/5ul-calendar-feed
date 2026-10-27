@@ -51,6 +51,9 @@ Keep Fluid Compute enabled. Add variables securely in Vercel, scoped to Producti
 
 - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`: an owned durable Redis database,
   not an anonymous temporary database. Use its primary REST endpoint.
+  Vercel Marketplace's `KV_REST_API_URL` / `KV_REST_API_TOKEN` pair is also supported
+  automatically if neither explicit Upstash variable is configured. Never use the
+  read-only token or mix credentials from two databases.
 - `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`, `VRC_CONTACT`.
 - `VRC_SESSION_KEY`: a new Fernet encryption key for this new counter. Keep it backed
   up securely and do not rotate it after initialization without a recovery plan.

@@ -24,7 +24,14 @@ def configuration():
 
 
 def configured_store(config):
-    return RedisStore(os.environ["UPSTASH_REDIS_REST_URL"], os.environ["UPSTASH_REDIS_REST_TOKEN"],
+    url = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if not url and not token:
+        url = os.environ.get("KV_REST_API_URL", "")
+        token = os.environ.get("KV_REST_API_TOKEN", "")
+    if not url or not token:
+        raise ValueError("Configure a complete Upstash REST URL/token pair")
+    return RedisStore(url, token,
                       os.environ["VRC_SESSION_KEY"], os.environ["VRC_USERNAME"], config["world_id"])
 
 

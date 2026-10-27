@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 
 from api.playtime import handler
 from playtime.model import apply_sample, new_state
-from playtime.serverless import handle, initialize_empty, public_report, tick, configuration
+from playtime.serverless import handle, initialize_empty, public_report, tick, configuration, configured_store
 from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE
 from playtime.vrchat import ApiFailure, Client
 
@@ -230,6 +230,41 @@ class HttpTests(unittest.TestCase):
         execute.assert_called_once_with("POST", "Bearer " + CRON, "sample")
         request.send_response.assert_called_once_with(503)
         request.send_header.assert_any_call("Cache-Control", "no-store")
+
+
+class StoreConfigurationTests(unittest.TestCase):
+    @patch.dict("os.environ", {"VRC_USERNAME": "bot", "VRC_SESSION_KEY": "key"}, clear=True)
+    @patch("playtime.serverless.RedisStore")
+    def test_vercel_marketplace_names_work_without_copying_secrets(self, factory):
+        with patch.dict("os.environ", {"KV_REST_API_URL": "https://test.upstash.io", "KV_REST_API_TOKEN": "write-token"}):
+            configured_store(CONFIG)
+        factory.assert_called_once_with("https://test.upstash.io", "write-token", "key", "bot", CONFIG["world_id"])
+
+    @patch.dict("os.environ", {"VRC_USERNAME": "bot", "VRC_SESSION_KEY": "key"}, clear=True)
+    @patch("playtime.serverless.RedisStore")
+    def test_explicit_upstash_pair_takes_precedence(self, factory):
+        with patch.dict("os.environ", {"UPSTASH_REDIS_REST_URL": "https://explicit.upstash.io",
+                                      "UPSTASH_REDIS_REST_TOKEN": "explicit-token",
+                                      "KV_REST_API_URL": "https://other.upstash.io", "KV_REST_API_TOKEN": "other-token"}):
+            configured_store(CONFIG)
+        self.assertEqual(factory.call_args.args[:2], ("https://explicit.upstash.io", "explicit-token"))
+
+    @patch.dict("os.environ", {"VRC_USERNAME": "bot", "VRC_SESSION_KEY": "key"}, clear=True)
+    @patch("playtime.serverless.RedisStore")
+    def test_partial_explicit_pair_does_not_mix_two_databases(self, factory):
+        with patch.dict("os.environ", {"UPSTASH_REDIS_REST_URL": "https://explicit.upstash.io",
+                                      "KV_REST_API_URL": "https://other.upstash.io", "KV_REST_API_TOKEN": "other-token"}):
+            with self.assertRaises(ValueError):
+                configured_store(CONFIG)
+        factory.assert_not_called()
+
+    @patch.dict("os.environ", {"VRC_USERNAME": "bot", "VRC_SESSION_KEY": "key"}, clear=True)
+    @patch("playtime.serverless.RedisStore")
+    def test_read_only_token_is_never_used_for_counter_storage(self, factory):
+        with patch.dict("os.environ", {"KV_REST_API_URL": "https://test.upstash.io", "KV_REST_API_READ_ONLY_TOKEN": "read-token"}):
+            with self.assertRaises(ValueError):
+                configured_store(CONFIG)
+        factory.assert_not_called()
 
 
 class RedisStoreTests(unittest.TestCase):
