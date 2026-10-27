@@ -176,6 +176,38 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(handle("POST", "Bearer " + CRON, "resume")[0], 401)
         store.assert_not_called()
 
+    @patch.dict("os.environ", ENV, clear=True)
+    @patch("playtime.serverless.configured_store")
+    def test_cron_cannot_initialize_or_erase_state(self, store):
+        self.assertEqual(handle("POST", "Bearer " + CRON, "initialize")[0], 401)
+        store.assert_not_called()
+
+    @patch.dict("os.environ", {**ENV, "PLAYTIME_ENABLED": "false", "VRC_USERNAME": "bot"}, clear=True)
+    @patch("playtime.serverless.configured_store")
+    @patch("playtime.serverless.login_client")
+    def test_operator_can_initialize_disabled_production_without_vrchat(self, login, store):
+        code, body = handle("POST", "Bearer " + ADMIN, "initialize")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["status"], "initialized")
+        state = store.return_value.initialize.call_args.args[0]
+        self.assertEqual(state["players"], {})
+        self.assertEqual(state["cookies"], {})
+        login.assert_not_called()
+        store.return_value.load.assert_not_called()
+
+    @patch.dict("os.environ", {**ENV, "VERCEL_ENV": "preview"}, clear=True)
+    @patch("playtime.serverless.configured_store")
+    def test_initialize_is_forbidden_in_preview(self, store):
+        self.assertEqual(handle("POST", "Bearer " + ADMIN, "initialize")[0], 503)
+        store.assert_not_called()
+
+    @patch.dict("os.environ", {**ENV, "VRC_USERNAME": "bot"}, clear=True)
+    @patch("playtime.serverless.configured_store")
+    def test_initialize_refuses_existing_counter_instead_of_resetting(self, store):
+        store.return_value.initialize.side_effect = RuntimeError("already exists")
+        self.assertEqual(handle("POST", "Bearer " + ADMIN, "initialize")[0], 503)
+        store.return_value.save.assert_not_called()
+
     @patch.dict("os.environ", {**ENV, "VERCEL_ENV": "preview"}, clear=True)
     @patch("playtime.serverless.configured_store")
     def test_preview_cannot_contact_vrchat(self, store):

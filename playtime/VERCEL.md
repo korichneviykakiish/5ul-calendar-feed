@@ -20,6 +20,10 @@ or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
 - `POST /api/playtime`, `X-Playtime-Action: resume`: one operator-requested login,
   requiring the **different** `PLAYTIME_ADMIN_SECRET` bearer token. Never give that
   token/header to the scheduler. It still honors Retry-After and the minute gate.
+- `POST /api/playtime`, `X-Playtime-Action: initialize`: operator-only creation of
+  an empty counter on the deployed production host. Uses the admin bearer token,
+  works while polling is disabled, never calls VRChat and refuses existing state.
+  This avoids downloading sensitive production variables for local initialization.
 
 An encrypted Upstash Redis checkpoint retains the authenticated session across
 invocations. A 330-second ownership-checked lease prevents overlapping workers;

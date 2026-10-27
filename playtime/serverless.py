@@ -94,22 +94,26 @@ def handle(method, authorization="", action="sample"):
     if method not in {"GET", "POST"}:
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
-        if action not in {"sample", "resume"}:
+        if action not in {"sample", "resume", "initialize"}:
             return 400, {"status": "invalid_action"}
-        secret_name = "PLAYTIME_ADMIN_SECRET" if action == "resume" else "CRON_SECRET"
+        admin_action = action in {"resume", "initialize"}
+        secret_name = "PLAYTIME_ADMIN_SECRET" if admin_action else "CRON_SECRET"
         secret = os.environ.get(secret_name, "")
-        if action == "resume" and secret == os.environ.get("CRON_SECRET", ""):
+        if admin_action and secret == os.environ.get("CRON_SECRET", ""):
             return 503, {"status": "separate_admin_secret_required"}
         if not authorized(authorization, secret):
             return 401, {"status": "unauthorized"}
-        if (os.environ.get("PLAYTIME_ENABLED") != "true"
-                or os.environ.get("VERCEL_ENV") != "production"):
+        if (os.environ.get("VERCEL_ENV") != "production"
+                or (action != "initialize" and os.environ.get("PLAYTIME_ENABLED") != "true")):
             return 503, {"status": "disabled"}
     try:
         config = configuration()
         store = configured_store(config)
         if method == "GET":
             return 200, public_report(store.load(), config, int(time.time()))
+        if action == "initialize":
+            store.initialize(new_state(os.environ["VRC_USERNAME"], config["world_id"]))
+            return 200, {"status": "initialized", "sampled": False, "poll_seconds": POLL_SECONDS}
         result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume")
         # Skips are healthy; an auth/API failure must not masquerade as success.
         healthy = {"ok", "busy", "already_checked"}
