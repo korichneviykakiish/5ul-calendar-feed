@@ -74,7 +74,10 @@ or chained restarts to simulate 24/7 hosting. This workflow publishes a static p
 
 ## Configuration and activation
 
-World ID comes from the current Unity scene blueprint and is in `playtime/config.json`.
+The owner's requested published world is explicitly configured in `playtime/config.json`:
+`wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21`. All visible instances of that world
+are eligible. This is not inferred from the local Unity scene's Blueprint ID or the
+bot's own location. Friends whose location is hidden cannot be counted.
 The workflow reuses repository secrets `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`,
 `VRC_CONTACT`, and `VRC_SESSION_KEY`. The password and TOTP seed are scoped to the sampling
 step's environment; they are never passed in workflow inputs, logs, or the public report.

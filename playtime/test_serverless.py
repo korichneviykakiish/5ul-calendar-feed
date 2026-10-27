@@ -265,6 +265,20 @@ class HttpTests(unittest.TestCase):
 
 
 class StoreConfigurationTests(unittest.TestCase):
+    def test_counts_only_the_requested_published_world_across_instances(self):
+        world = "wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21"
+        self.assertEqual(configuration()["world_id"], world)
+        rows = [
+            {"id": "usr_public", "displayName": "Public", "location": world + ":123~region(eu)"},
+            {"id": "usr_group", "displayName": "Group", "location": world + ":456~group(grp_test)"},
+            {"id": "usr_other", "displayName": "Other", "location": "wrld_febe4b16-315b-4b3b-9c7f-3ff92ee53e92:123"},
+        ]
+        state = apply_sample(new_state("bot", world), rows, 1200, 1, 600)
+        state = apply_sample(state, rows, 1260, 2, 600)
+        self.assertEqual(state["players"]["usr_public"]["seconds"], 60)
+        self.assertEqual(state["players"]["usr_group"]["seconds"], 60)
+        self.assertNotIn("usr_other", state["players"])
+
     @patch.dict("os.environ", {"VRC_USERNAME": "bot", "VRC_SESSION_KEY": "key"}, clear=True)
     @patch("playtime.serverless.RedisStore")
     def test_vercel_marketplace_names_work_without_copying_secrets(self, factory):
