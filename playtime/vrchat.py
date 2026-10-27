@@ -63,8 +63,10 @@ class Client:
                 "status": response.status_code, **request_cookie_flags(response),
             }))
         if response.status_code == 429:
-            raise ApiFailure("rate_limited", retry_delay(response.headers.get("Retry-After", "")),
-                             operation, 429, auth_reason(response))
+            reason = auth_reason(response)
+            status = "login_required" if reason == "email-location-verification" else "rate_limited"
+            raise ApiFailure(status, retry_delay(response.headers.get("Retry-After", "")),
+                             operation, 429, reason)
         if response.status_code == 401:
             raise ApiFailure("login_required", operation=operation, http_status=401, reason=auth_reason(response))
         if response.status_code == 403:

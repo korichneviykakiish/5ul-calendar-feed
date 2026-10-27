@@ -155,6 +155,29 @@ class FreshSessionRunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "rate_limited")
         self.client.logout.assert_not_called()
 
+    def test_location_challenge_during_sampling_blocks_later_scheduled_login(self):
+        self.client.friends.side_effect = ApiFailure("login_required", 7200,
+                                                     reason="email-location-verification")
+        result, _ = process_with_login(self.state, CONFIG, 2)
+        self.assertEqual(result["status"], "login_required")
+        self.assertEqual(result["retry_at"], 8500)
+        self.client.logout.assert_not_called()
+        self.client.accept_requests.assert_not_called()
+        self.assertEqual(result["players"]["usr_one"]["seconds"], 0)
+        process_with_login(result, CONFIG, 3, now=1400, resume=True)
+        process_with_login(result, CONFIG, 4, now=9000)
+        self.login.assert_called_once()
+
+    def test_location_challenge_at_login_preserves_server_wait(self):
+        self.login.side_effect = ApiFailure("login_required", 7200,
+                                            reason="email-location-verification")
+        result, _ = process_with_login(self.state, CONFIG, 2)
+        self.assertEqual(result["retry_at"], 8500)
+        process_with_login(result, CONFIG, 3, now=1400, resume=True)
+        process_with_login(result, CONFIG, 4, now=9000)
+        self.login.assert_called_once()
+        self.client.verify.assert_not_called()
+
     def test_logout_failure_preserves_earned_time_but_blocks_more_logins(self):
         self.client.logout.side_effect = ApiFailure("network_error")
         result, _ = process_with_login(self.state, CONFIG, 2)

@@ -240,6 +240,18 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("Authorization", self.session.headers)
         self.assertFalse(self.session.request.call_args.kwargs["allow_redirects"])
 
+    def test_location_challenge_during_session_requires_manual_recovery(self):
+        self.session.request.return_value = response({"error": {"message":
+            "Logging in from too many places? Check your email for verification link"}}, 429,
+            {"Retry-After": "7200"})
+        with self.assertRaises(ApiFailure) as failure:
+            self.client.verify()
+        self.assertEqual(failure.exception.status, "login_required")
+        self.assertEqual(failure.exception.reason, "email-location-verification")
+        self.assertEqual(failure.exception.retry_after, 7200)
+        self.assertEqual(failure.exception.http_status, 429)
+        self.session.request.assert_called_once()
+
     def test_http_failures_are_sanitized(self):
         for status, expected in ((401, "login_required"), (403, "access_denied"), (500, "api_error")):
             self.session.request.return_value = response({"secret": "never print me"}, status)

@@ -96,6 +96,9 @@ def interrupt(state, status, now, retry_after=0):
         # Our conservative backoff, not a claim about the server's expiry time.
         delay = min(86400, 3600 * 2 ** min(result["rate_limits"] - 1, 5))
         result["retry_at"] = now + max(delay, int(retry_after))
+    elif retry_after > 0:
+        # Manual recovery must also respect a server-provided wait period.
+        result["retry_at"] = max(result["retry_at"], now + int(retry_after))
     return result
 
 
