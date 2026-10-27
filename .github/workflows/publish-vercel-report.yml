@@ -1,0 +1,53 @@
+name: publish-vercel-report
+
+on:
+  schedule:
+    - cron: '3-58/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: calendar-feed
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'korichneviykakiish/5ul-calendar-feed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate publication rules without VRChat access
+        run: python -m unittest playtime.test_publish -v
+      - name: Fetch only the public Vercel report
+        run: python -m playtime.publish
+      - name: Save public report
+        run: |
+          if [ -n "$(git status --porcelain docs/playtime.json)" ]; then
+            git config user.name 'vercel-report-publisher'
+            git config user.email 'actions@users.noreply.github.com'
+            git add docs/playtime.json
+            git commit -m 'chore: publish public report from Vercel'
+            git push origin HEAD:main
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - name: Publish trusted static report for VRChat
+        id: deployment
+        uses: actions/deploy-pages@v5

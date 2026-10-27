@@ -101,9 +101,10 @@ invocations per 30 days, plus monitoring/report readers.
    String Loading trusted-domain rules first: a new Vercel domain is not assumed
    equivalent to the currently trusted GitHub Pages domain. Keeping the old URL
    needs a separate verified publication bridge; this adapter does not provide one.
-   Existing GitHub
-   Pages URLs will otherwise retain the old snapshot; the migration does not silently
-   redirect them. Unity changes are a separate task. Calendar remains unchanged.
+   `publish-vercel-report.yml` now provides that bridge for the existing Pages URL:
+   it copies only the public sanitized JSON, without credentials or API sampling,
+   approximately every five minutes. GitHub scheduling delays affect display
+   freshness, not the counter's one-minute operation. Calendar remains unchanged.
 
 GitHub's old hours and Vercel's new hours are separate datasets. Re-enabling the
 old host will show old totals, not the new counter. Do not silently merge the two.

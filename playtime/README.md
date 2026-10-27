@@ -15,9 +15,16 @@ The existing calendar and the Unity scene are unchanged.
 
 ## Operation
 
+The active counter runs on Vercel, triggered once per minute by cron-job.org.
+The original GitHub sampler is disabled. `publish-vercel-report.yml` only copies
+the sanitized public result to the existing trusted GitHub Pages URL; it receives
+no VRChat credentials and never logs in. It targets publication every five minutes
+(subject to GitHub scheduling delays), independent of the one-minute API sampling.
+Unity keeps its existing URL. The old encrypted checkpoints are not imported.
+
 For the separately deployed one-minute Vercel adapter, see [VERCEL.md](VERCEL.md).
 It uses persistent encrypted state and an external scheduler, not GitHub Actions.
-The GitHub schedule below is unchanged until a verified cutover.
+The GitHub sampling instructions below describe the disabled legacy workflow.
 
 `publish-playtime` is a short scheduled report job, not a continuously running game client.
 The schedule targets every five minutes, away from the top of the hour. GitHub can delay or
