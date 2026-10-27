@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from playtime.model import apply_sample, new_state
-from playtime.scheduler import CronClient, configure, status, TARGET, TITLE, SCHEDULE
+from playtime.scheduler import CronClient, configure, status, rearm, TARGET, TITLE, SCHEDULE
 from playtime.test_serverless import ADMIN, CRON, ENV, CONFIG, FRIEND, MemoryStore
 from playtime.serverless import handle
 
@@ -103,7 +103,7 @@ class SchedulerTests(unittest.TestCase):
     @patch.dict("os.environ", ENV, clear=True)
     @patch("playtime.serverless.configured_store")
     def test_cron_token_cannot_manage_or_read_schedule(self, factory):
-        for action in ("schedule", "schedule-status"):
+        for action in ("schedule", "schedule-status", "schedule-rearm"):
             self.assertEqual(handle("POST", "Bearer " + CRON, action)[0], 401)
         factory.assert_not_called()
 
@@ -117,6 +117,88 @@ class SchedulerTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", str(error.exception))
         session.request.assert_called_once()
         self.assertFalse(session.request.call_args.kwargs["allow_redirects"])
+
+
+class SchedulerRearmTests(unittest.TestCase):
+    def setUp(self):
+        state = new_state("bot", CONFIG["world_id"])
+        state.update(status="login_required", last_success=1200, scheduler_job_id=123,
+                     session_recovery_pending=True, auto_login_blocked=False)
+        self.store = MemoryStore(state)
+        self.client = Mock()
+        self.job = {"jobId": 123, "title": TITLE, "url": TARGET, "enabled": False,
+                    "requestMethod": 1, "schedule": SCHEDULE, "saveResponses": False,
+                    "auth": {"enable": False}, "redirectSuccess": False,
+                    "extendedData": {"headers": {"Authorization": "Bearer " + CRON}, "body": ""}}
+
+    def rearm(self, config=None):
+        with patch.dict("os.environ", {"CRON_SECRET": CRON}):
+            return rearm(self.store, CONFIG if config is None else config, self.client)
+
+    def test_rearms_only_saved_task_without_touching_hours_or_credentials(self):
+        before = copy.deepcopy(self.store.state)
+        self.client.call.side_effect = [{"jobDetails": self.job}, {},
+                                        {"jobDetails": {**self.job, "enabled": True}}]
+        result = self.rearm()
+        self.assertEqual(result["status"], "schedule_rearmed")
+        self.assertEqual(self.client.call.call_args_list[1].args,
+                         ("PATCH", "/jobs/123", {"job": {"enabled": True}}))
+        self.assertEqual(self.store.state, before)
+        self.assertEqual(self.store.saves, [])
+
+    def test_already_enabled_task_is_not_modified(self):
+        self.client.call.return_value = {"jobDetails": {**self.job, "enabled": True}}
+        self.assertTrue(self.rearm()["enabled"])
+        self.client.call.assert_called_once_with("GET", "/jobs/123")
+
+    def test_hard_stops_unknown_state_and_absent_task_cannot_rearm(self):
+        original = copy.deepcopy(self.store.state)
+        for changes in ({"auto_login_blocked": True}, {"session_recovery_pending": False},
+                        {"status": "access_denied"}, {"status": "rate_limited"},
+                        {"last_success": None}, {"scheduler_job_id": None}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.store.state = {**copy.deepcopy(original), **changes}
+                self.rearm()
+            self.client.call.assert_not_called()
+
+    def test_disabled_policy_cannot_rearm(self):
+        with self.assertRaises(ValueError):
+            self.rearm({**CONFIG, "auto_recover_session": False})
+        self.client.call.assert_not_called()
+
+    def test_changed_task_is_not_taken_over(self):
+        for changes in ({"title": "Other"}, {"url": "https://other.example"},
+                        {"requestMethod": 0}, {"schedule": {}}, {"saveResponses": True},
+                        {"auth": {"enable": True}}, {"redirectSuccess": True},
+                        {"extendedData": {"headers": {"Authorization": "Bearer " + ADMIN}}},
+                        {"extendedData": {"headers": {"Authorization": "Bearer " + CRON,
+                                                       "X-Playtime-Action": "resume"}}}):
+            self.client.reset_mock()
+            self.client.call.return_value = {"jobDetails": {**self.job, **changes}}
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.rearm()
+            self.assertTrue(all(c.args[0] == "GET" for c in self.client.call.call_args_list))
+
+    def test_unconfirmed_rearm_is_not_reported_as_enabled(self):
+        self.client.call.side_effect = [{"jobDetails": self.job}, {}, {"jobDetails": self.job}]
+        with self.assertRaises(ValueError):
+            self.rearm()
+
+    def test_busy_rearm_does_not_contact_provider(self):
+        self.store.busy = True
+        self.assertEqual(self.rearm()["status"], "busy")
+        self.client.call.assert_not_called()
+
+    @patch.dict("os.environ", ENV, clear=True)
+    @patch("playtime.serverless.configuration", return_value=CONFIG)
+    @patch("playtime.serverless.configured_store")
+    @patch("playtime.serverless.rearm_schedule")
+    @patch("playtime.serverless.login_client")
+    def test_operator_rearm_route_never_logs_in(self, login, rearm_mock, store, config):
+        rearm_mock.return_value = {"status": "schedule_rearmed", "enabled": True}
+        self.assertEqual(handle("POST", "Bearer " + ADMIN, "schedule-rearm")[0], 200)
+        rearm_mock.assert_called_once_with(store.return_value, CONFIG)
+        login.assert_not_called()
 
 
 if __name__ == "__main__":

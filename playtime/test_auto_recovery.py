@@ -177,6 +177,50 @@ class AutomaticRecoveryTests(unittest.TestCase):
         self.login.assert_not_called()
         self.assertEqual(self.store.state["last_login_method"], "manual")
 
+    def test_six_hour_wait_keeps_scheduler_alive_without_sampling_or_login(self):
+        self.reject()
+        self.tick(1320)
+        self.reject(1380)
+        self.login.reset_mock()
+        self.client.reset_mock()
+        before = copy.deepcopy(self.store.state)
+        for now in range(1440, 1320 + AUTO_LOGIN_COOLDOWN, 60):
+            with patch.dict("os.environ", ENV, clear=True), \
+                    patch("playtime.serverless.configuration", return_value=self.config), \
+                    patch("playtime.serverless.configured_store", return_value=self.store), \
+                    patch("playtime.serverless.time.time", return_value=now), \
+                    patch("playtime.serverless.login_client", self.login), \
+                    patch("playtime.serverless.Client", return_value=self.client):
+                code, body = handle("POST", "Bearer " + CRON)
+            self.assertEqual(code, 200)
+            self.assertEqual(body["status"], "login_required")
+            self.assertIs(body["recovery_waiting"], True)
+            self.assertIs(body["sampled"], False)
+            self.assertEqual(body["retry_at"], 1320 + AUTO_LOGIN_COOLDOWN)
+        self.login.assert_not_called()
+        self.client.verify.assert_not_called()
+        self.assertEqual(self.store.state, before)
+        report = public_report(self.store.state, self.config, 20000)
+        self.assertEqual(report["status"], "login_required")
+        self.assertEqual(report["top"][0]["seconds"], 600)
+
+    def test_hard_stop_and_server_backoff_never_become_scheduler_success(self):
+        self.reject()
+        initial = copy.deepcopy(self.store.state)
+        for changes in ({"auto_login_blocked": True}, {"session_recovery_pending": False},
+                        {"retry_at": 1800}, {"status": "rate_limited", "retry_at": 1800},
+                        {"status": "access_denied"}):
+            self.store.state = {**copy.deepcopy(initial), **changes}
+            with self.subTest(changes=changes), patch.dict("os.environ", ENV, clear=True), \
+                    patch("playtime.serverless.configuration", return_value=self.config), \
+                    patch("playtime.serverless.configured_store", return_value=self.store), \
+                    patch("playtime.serverless.time.time", return_value=1320), \
+                    patch("playtime.serverless.login_client", self.login):
+                code, body = handle("POST", "Bearer " + CRON)
+            self.assertEqual(code, 503)
+            self.assertIs(body["sampled"], False)
+        self.login.assert_not_called()
+
     def test_email_challenge_unknown_401_and_other_endpoints_require_manual_action(self):
         initial = copy.deepcopy(self.store.state)
         for changes in ({"reason": "email-location-verification", "session_rejected": False},

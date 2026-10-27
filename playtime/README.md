@@ -106,6 +106,14 @@ never bypasses a server cooldown. The attempt timestamp also limits later automa
 logins after manual recovery. `recovery-status` exposes only safe operator diagnostics;
 none of these private flags are published in the leaderboard.
 
+While an approved automatic recovery waits for the six-hour guard, scheduled
+requests return HTTP 200 with `status: login_required`, `sampled: false` and
+`recovery_waiting: true`. This acknowledges the clock, not successful collection:
+the public status and last-success timestamp remain unchanged. Actual failures,
+email challenges and hard stops still return HTTP 503. Operator `schedule-rearm`
+can restore only the existing unchanged task during this eligible wait, without
+logging in, resetting state or shortening any cooldown.
+
 On a rejected login, additional email confirmation or invalid secrets, sampling pauses
 pending manual recovery. On 429 it stores a
 cooldown of at least one hour, increasing up to a day, and respects a longer server Retry-After.

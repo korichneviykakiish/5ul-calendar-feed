@@ -24,7 +24,9 @@ or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
 - External scheduler: **every minute** (`* * * * *`, all minutes/hours/days).
   For cron-job.org use POST, that Authorization header, no request body, and no
   `X-Playtime-Action` header. Disable automatic job disabling on repeated failures;
-  enable failure notifications. A paused login must remain visibly unhealthy.
+  enable failure notifications. Actual failures and security stops remain HTTP 503.
+  An approved recovery waiting for its six-hour guard returns HTTP 200 only to keep
+  the clock alive; its body/report still says `login_required`, `sampled: false`.
 - `GET /playtime.json` (also `/api/playtime`): public sanitized leaderboard only.
   Reading the report never logs in or polls VRChat. Public responses cache for 60s.
 - `POST /api/playtime`, `X-Playtime-Action: resume`: one operator-requested login,
@@ -40,6 +42,10 @@ or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
   Enabling requires two recent successful polls, reuses an existing managed task,
   and refuses duplicates or an unrelated task. The job is POST once per minute;
   no response bodies or administrator credentials are saved by the scheduler.
+- Operator `schedule-rearm` may re-enable only the saved, unchanged minute task
+  while approved automatic recovery is pending. It does not create a task, change
+  credentials, log in or clear the cooldown. Unknown sessions, security stops and
+  changed task settings are rejected. Initial setup still needs fresh successful polls.
 
 An encrypted Upstash Redis checkpoint retains the authenticated session across
 invocations. A 330-second ownership-checked lease prevents overlapping workers;

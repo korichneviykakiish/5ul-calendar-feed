@@ -106,3 +106,33 @@ def status(store, client=None):
     return {"status": "schedule_status", "job_id": identifier, "enabled": job.get("enabled"),
             "last_execution": job.get("lastExecution"), "next_execution": job.get("nextExecution"),
             "history": safe_rows, "last_success": state["last_success"]}
+
+
+def rearm(store, config, client=None):
+    """Resume only the saved task awaiting an already-approved session recovery."""
+    if not store.acquire():
+        return {"status": "busy", "sampled": False}
+    try:
+        state = store.load()
+        if (config.get("auto_recover_session") is not True or state["status"] != "login_required"
+                or state.get("session_recovery_pending") is not True
+                or state.get("auto_login_blocked") is True or state["last_success"] is None):
+            raise ValueError("Only an eligible pending recovery can rearm the existing schedule")
+        identifier = state.get("scheduler_job_id")
+        path = "/jobs/" + job_id(identifier)
+        client = client or CronClient(os.environ["CRONJOB_API_KEY"])
+        job = own_job(client, identifier)
+        token = os.environ["CRON_SECRET"]
+        if (job.get("requestMethod") != 1 or job.get("schedule") != SCHEDULE
+                or job.get("extendedData", {}).get("headers") != {"Authorization": "Bearer " + token}
+                or job.get("extendedData", {}).get("body", "") != ""
+                or job.get("saveResponses") is not False or job.get("auth", {}).get("enable") is not False
+                or job.get("redirectSuccess") is not False):
+            raise ValueError("Existing task settings changed; operator review required")
+        if job.get("enabled") is not True:
+            client.call("PATCH", path, {"job": {"enabled": True}})
+            if own_job(client, identifier).get("enabled") is not True:
+                raise ValueError("Scheduler rearming was not confirmed")
+        return {"status": "schedule_rearmed", "job_id": identifier, "enabled": True, "poll_seconds": 60}
+    finally:
+        store.release()

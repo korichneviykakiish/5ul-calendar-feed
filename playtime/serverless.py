@@ -13,7 +13,7 @@ from .model import interrupt, leaderboard, new_state
 from .run import process
 from .serverless_store import RedisStore
 from .vrchat import ApiFailure, Client
-from .scheduler import configure as configure_schedule, status as schedule_status
+from .scheduler import configure as configure_schedule, status as schedule_status, rearm as rearm_schedule
 from .publication_scheduler import configure as configure_publication, status as publication_status
 
 POLL_SECONDS = 60
@@ -89,7 +89,8 @@ def tick(store, config, contact, resume=False, now=None):
                          and state["last_success"] is not None)
             if not automatic or now < policy["next_login_allowed"]:
                 return {"status": state["status"] if state["status"] in BLOCKED else "login_required",
-                        "sampled": False, "retry_at": policy["next_login_allowed"] if automatic else state["retry_at"]}
+                        "sampled": False, "retry_at": policy["next_login_allowed"] if automatic else state["retry_at"],
+                        "recovery_waiting": automatic}
         login_requested = resume or automatic
 
         # Persist the attempt before external effects. A timeout cannot trigger
@@ -141,7 +142,7 @@ def handle(method, authorization="", action="sample"):
     if method not in {"GET", "POST"}:
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
-        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status", "forget-previous-world",
+        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status", "schedule-rearm", "forget-previous-world",
                           "publication-schedule", "publication-status", "storage-status", "recovery-status"}:
             return 400, {"status": "invalid_action"}
         admin_action = action != "sample"
@@ -173,6 +174,8 @@ def handle(method, authorization="", action="sample"):
             return 200, configure_schedule(store)
         if action == "schedule-status":
             return 200, schedule_status(store)
+        if action == "schedule-rearm":
+            return 200, rearm_schedule(store, config)
         if action == "publication-schedule":
             return 200, configure_publication(store)
         if action == "publication-status":
@@ -182,9 +185,11 @@ def handle(method, authorization="", action="sample"):
         if action == "recovery-status":
             return 200, {"status": "recovery_policy", **recovery_status(store.load(), config)}
         result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume")
-        # Skips are healthy; an auth/API failure must not masquerade as success.
+        # A policy wait must keep its clock alive, without claiming a successful sample.
         healthy = {"ok", "busy", "already_checked"}
-        return (200 if result["status"] in healthy else 503), result
+        waiting = (action == "sample" and result["status"] == "login_required"
+                   and result.get("recovery_waiting") is True and result.get("sampled") is False)
+        return (200 if result["status"] in healthy or waiting else 503), result
     except Exception as error:
         print("[playtime] Serverless check stopped safely: " + type(error).__name__)
         return 503, {"status": "check_failed", "sampled": False}
