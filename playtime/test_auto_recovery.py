@@ -158,7 +158,8 @@ class AutomaticRecoveryTests(unittest.TestCase):
         self.tick(100000)
         self.login.assert_not_called()
 
-    def test_successful_auto_login_has_a_persistent_six_hour_limit(self):
+    def test_successful_auto_login_has_a_persistent_thirty_minute_limit(self):
+        self.assertEqual(AUTO_LOGIN_COOLDOWN, 1800)
         self.reject()
         self.tick(1320)
         self.reject(1380)
@@ -177,7 +178,7 @@ class AutomaticRecoveryTests(unittest.TestCase):
         self.login.assert_not_called()
         self.assertEqual(self.store.state["last_login_method"], "manual")
 
-    def test_six_hour_wait_keeps_scheduler_alive_without_sampling_or_login(self):
+    def test_thirty_minute_wait_keeps_scheduler_alive_without_sampling_or_login(self):
         self.reject()
         self.tick(1320)
         self.reject(1380)
@@ -203,6 +204,13 @@ class AutomaticRecoveryTests(unittest.TestCase):
         report = public_report(self.store.state, self.config, 20000)
         self.assertEqual(report["status"], "login_required")
         self.assertEqual(report["top"][0]["seconds"], 600)
+
+    def test_healthy_session_is_not_restarted_after_thirty_minutes(self):
+        for now in range(1260, 1260 + 2 * AUTO_LOGIN_COOLDOWN + 1, 60):
+            self.assertEqual(self.tick(now)["status"], "ok")
+        self.login.assert_not_called()
+        self.assertNotIn("last_login_attempt_at", self.store.state)
+        self.assertEqual(self.store.state["cookies"], {"auth": "PRIVATE_COOKIE"})
 
     def test_hard_stop_and_server_backoff_never_become_scheduler_success(self):
         self.reject()
@@ -307,7 +315,7 @@ class RecoveryPolicyTests(unittest.TestCase):
         store.return_value.load.return_value = new_state("bot", "wrld_test")
         code, result = handle("POST", "Bearer " + ADMIN, "recovery-status")
         self.assertEqual(code, 200)
-        self.assertEqual(result["cooldown_seconds"], 21600)
+        self.assertEqual(result["cooldown_seconds"], 1800)
         self.assertTrue(result["manual_required"])
         tick_mock.assert_not_called()
 

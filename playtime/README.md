@@ -50,7 +50,8 @@ Requests are bounded; there are no retry loops.
 
 Normal Vercel samples reuse the encrypted authenticated session. With the owner's
 `auto_recover_session: true` setting, an ordinary verified-session 401 permits one
-automatic password/TOTP recovery on a later minute, at most once per six hours.
+automatic password/TOTP recovery on a later minute, at most once per 30 minutes.
+Healthy sessions are reused indefinitely; this is not a periodic logout/restart.
 Only a known missing-credentials/unauthorized response to exactly one sent auth cookie
 qualifies, not a password failure, missing cookie, unknown response or email challenge.
 No game client or always-on personal computer is needed. Vercel Hobby does not guarantee
@@ -106,7 +107,7 @@ never bypasses a server cooldown. The attempt timestamp also limits later automa
 logins after manual recovery. `recovery-status` exposes only safe operator diagnostics;
 none of these private flags are published in the leaderboard.
 
-While an approved automatic recovery waits for the six-hour guard, scheduled
+While an approved automatic recovery waits for the 30-minute guard, scheduled
 requests return HTTP 200 with `status: login_required`, `sampled: false` and
 `recovery_waiting: true`. This acknowledges the clock, not successful collection:
 the public status and last-success timestamp remain unchanged. Actual failures,

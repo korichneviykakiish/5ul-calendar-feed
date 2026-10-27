@@ -18,7 +18,7 @@ from .publication_scheduler import configure as configure_publication, status as
 
 POLL_SECONDS = 60
 WORK_SECONDS = 18
-AUTO_LOGIN_COOLDOWN = 6 * 60 * 60
+AUTO_LOGIN_COOLDOWN = 30 * 60
 RECOVERY_FIELDS = ("session_recovery_pending", "auto_login_blocked", "last_login_attempt_at",
                    "last_login_method", "auto_login_attempts")
 BLOCKED = {"waiting_for_login", "login_required", "access_denied", "configuration_error", "logout_failed"}
@@ -114,7 +114,7 @@ def tick(store, config, contact, resume=False, now=None):
         try:
             if login_requested:
                 if automatic:
-                    print("[playtime] Automatic session recovery started; one attempt; six-hour guard")
+                    print("[playtime] Automatic session recovery started; one attempt; 30-minute guard")
                 client = login_client(config["request_spacing_seconds"], persist=False)
             else:
                 client = Client(state["cookies"], contact, config["request_spacing_seconds"])

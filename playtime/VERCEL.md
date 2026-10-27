@@ -25,7 +25,7 @@ or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
   For cron-job.org use POST, that Authorization header, no request body, and no
   `X-Playtime-Action` header. Disable automatic job disabling on repeated failures;
   enable failure notifications. Actual failures and security stops remain HTTP 503.
-  An approved recovery waiting for its six-hour guard returns HTTP 200 only to keep
+  An approved recovery waiting for its 30-minute guard returns HTTP 200 only to keep
   the clock alive; its body/report still says `login_required`, `sampled: false`.
 - `GET /playtime.json` (also `/api/playtime`): public sanitized leaderboard only.
   Reading the report never logs in or polls VRChat. Public responses cache for 60s.
@@ -62,8 +62,9 @@ The owner enabled `auto_recover_session` in `playtime/config.json`: only a known
 exactly one auth cookie actually sent and no Basic login header, marks recovery
 eligible. It runs on a later minute and never bootstraps a new/unknown session.
 
-Automatic recovery is limited to one attempt per six hours, counting manual login
-timestamps too. The attempt and a hard-stop latch are saved before credentials are
+Automatic recovery is limited to one attempt per 30 minutes, counting manual login
+timestamps too. Healthy sessions are not restarted on that interval. The attempt
+and a hard-stop latch are saved before credentials are
 sent. Failure, timeout/crash, rejected new session, email challenge, 403 or 429
 prevents another automatic login until a successful operator resume. Server
 Retry-After always wins; no IP switching or repeated attempts to bypass rejection.
