@@ -74,6 +74,8 @@ def configure(store, client=None, now=None):
         if state.get("scheduler_job_id") not in (None, identifier):
             raise ValueError("Saved scheduler identity differs; operator review required")
         own_job(client, identifier)
+        payload["notification"] = {"onFailure": True, "onFailureCount": 1, "onDisable": True,
+                                   "mode": 2, "selectedChannels": [0]}
         client.call("PATCH", path, {"job": {**payload, "enabled": True}})
         saved = own_job(client, identifier)
         if (saved.get("enabled") is not True or saved.get("requestMethod") != 1

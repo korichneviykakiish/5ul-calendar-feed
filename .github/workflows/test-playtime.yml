@@ -3,9 +3,9 @@ name: test-playtime
 on:
   push:
     branches: [main]
-    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
+    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt', 'requirements-test.txt']
   pull_request:
-    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt']
+    paths: ['playtime/**', '.github/workflows/publish-vercel-report.yml', '.github/workflows/test-playtime.yml', 'session_state.py', 'fetch_events.py', 'requirements.txt', 'requirements-test.txt']
   workflow_dispatch:
 
 permissions:
@@ -22,5 +22,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements-test.txt
       - run: python -m unittest discover -v

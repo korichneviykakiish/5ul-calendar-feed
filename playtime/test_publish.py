@@ -71,7 +71,8 @@ class PublicationWorkflowTests(unittest.TestCase):
         workflow = (root / ".github/workflows/publish-vercel-report.yml").read_text(encoding="utf-8")
         self.assertIn("python -m playtime.publish", workflow)
         self.assertIn("actions/deploy-pages@v5", workflow)
-        self.assertIn("schedule:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
         for forbidden in ("secrets.", "VRC_", "playtime.run", "inputs:", "PLAYTIME_ENABLED"):
             self.assertNotIn(forbidden, workflow)
         self.assertFalse((root / ".github/workflows/playtime.yml").exists())

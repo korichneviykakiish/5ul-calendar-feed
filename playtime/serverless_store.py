@@ -14,10 +14,9 @@ from .model import validate_state
 LEASE_SECONDS = 330  # Longer than Vercel's configured 300-second hard limit.
 MAX_BYTES = 4 * 1024 * 1024
 SAVE = """
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
-redis.call('SET', KEYS[3], ARGV[2])
-redis.call('SET', KEYS[2], ARGV[3])
+local current = redis.call('MGET', KEYS[1], KEYS[2])
+if current[1] ~= ARGV[1] or current[2] ~= ARGV[2] then return 0 end
+redis.call('MSET', KEYS[3], ARGV[2], KEYS[2], ARGV[3])
 return 1
 """
 RELEASE = """
@@ -30,6 +29,10 @@ local removed = redis.call('DEL', KEYS[2], KEYS[3])
 redis.call('DEL', KEYS[1])
 return removed
 """
+
+
+class UnsupportedCommand(RuntimeError):
+    """A safe capability diagnostic, without the service's response text."""
 
 
 class RedisStore:
@@ -56,6 +59,10 @@ class RedisStore:
         if response.status_code != 200:
             raise RuntimeError("State service unavailable")
         body = response.json()
+        if isinstance(body, dict) and isinstance(body.get("error"), str) and parts[0] == "DELEX":
+            message = body["error"].casefold()
+            if "delex" in message and ("unknown command" in message or "not supported" in message):
+                raise UnsupportedCommand("Native conditional release unavailable")
         if not isinstance(body, dict) or "error" in body or "result" not in body:
             raise RuntimeError("State service rejected command")
         return body["result"]
@@ -69,8 +76,21 @@ class RedisStore:
 
     def release(self):
         if self.lease:
-            self.command("EVAL", RELEASE, 1, self.prefix + ":lock", self.lease)
+            try:
+                self.command("DELEX", self.prefix + ":lock", "IFEQ", self.lease)
+            except UnsupportedCommand:
+                self.command("EVAL", RELEASE, 1, self.prefix + ":lock", self.lease)
             self.lease = None
+
+    def native_release_supported(self):
+        # A random absent key tests support without creating data or touching a live lease.
+        try:
+            result = self.command("DELEX", self.prefix + ":capability:" + secrets.token_hex(16), "IFEQ", "probe")
+            if type(result) is not int or result != 0:
+                raise ValueError("Unexpected storage capability response")
+            return True
+        except UnsupportedCommand:
+            return False
 
     def encode(self, state):
         validate_state(state, self.account, self.world_id)

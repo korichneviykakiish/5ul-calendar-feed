@@ -101,16 +101,34 @@ creating a disabled job, confirming its identity, and enabling it. Existing mana
 jobs are reused; incomplete listings, duplicates or changed identities stop setup.
 Only this dedicated GitHub token is stored in the publication job's HTTPS request
 header. Its request is a fixed `POST` to `publish-vercel-report.yml`, body
-`{"ref":"main"}`, every five minutes. It cannot sample VRChat or reset hours.
+`{"ref":"main"}`, every minute with no expiry date. It cannot sample VRChat or reset hours.
+An existing five-minute task is upgraded in place only when its saved job ID matches;
+the change never creates a duplicate or takes over an unrelated job.
 New tasks notify the scheduler account email on failure/automatic disabling;
 reconfiguration preserves existing notification preferences. Renew the limited
 token before its chosen expiration, then reconfigure the same task.
 
 `publication-status` exposes only safe numeric history. HTTP 204 means GitHub
 accepted a dispatch, not that Pages finished publishing. Verify actual successful
-Actions runs and the public Pages `updated` timestamp. Once two external triggers
-and publication are confirmed, remove the redundant native `on.schedule` entry,
-leaving manual/external dispatch enabled. The minute sampling task is unchanged.
+Actions runs and the public Pages `updated` timestamp. The redundant native
+`on.schedule` entry is removed, leaving manual/external dispatch enabled. Both
+tasks run once per minute; sampling failures notify the cron-job.org account email.
+
+### Month-long operation
+
+Neither task has an end date; no month-end reset is performed. Counters and the
+previous checkpoint have no TTL. Only temporary leases expire. The dedicated GitHub
+token must outlive the intended period. Vercel/VRChat uptime, outbound IP stability,
+session acceptance, GitHub queue delays and provider quotas are not guaranteed.
+
+Fenced saves use MGET/MSET instead of four separate inner commands. Native DELEX
+IFEQ releases only the owner's lease; older backends safely fall back to Lua.
+Operator `storage-status` tests native support using a random absent key, without
+creating data or touching any live lease. With native release, a normal sample is
+approximately nine billable Redis commands including Lua inner calls, plus one
+for a public read: about 432,000 commands per 30 days (446,400 per 31). This excludes
+extra clients, management and other uses of the same database; monitor actual usage
+against the provider's current plan. No paid plan is enabled automatically.
 
 ## Safe cutover
 
@@ -137,7 +155,7 @@ leaving manual/external dispatch enabled. The minute sampling task is unchanged.
    needs a separate verified publication bridge; this adapter does not provide one.
    `publish-vercel-report.yml` provides that bridge for the existing Pages URL:
    it copies only the public sanitized JSON, without credentials or API sampling,
-   approximately every five minutes. GitHub scheduling delays affect display
+   once per minute through the external task. GitHub execution/deployment delays affect display
    freshness, not the counter's one-minute operation. Calendar remains unchanged.
 
 The retired world's hours were not imported. The old GitHub sampling workflow

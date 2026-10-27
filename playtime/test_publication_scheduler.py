@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from playtime.model import new_state
 from playtime.publication_scheduler import (
-    API, BODY, OWNER, PREFIX, REPOSITORY, SCHEDULE, TARGET, TITLE, WORKFLOW,
+    API, BODY, LEGACY_TITLE, OWNER, PREFIX, REPOSITORY, SCHEDULE, TARGET, TITLE, WORKFLOW,
     GitHubPublisher, configure, status,
 )
 from playtime.serverless import handle
@@ -44,7 +44,7 @@ class PublicationSchedulerTests(unittest.TestCase):
     def test_new_job_verifies_access_then_creates_disabled_and_enables(self):
         result = self.configure(self.new_job())
         self.assertEqual(result, {"status": "publication_schedule_ready", "job_id": 123,
-                                  "enabled": True, "publication_seconds": 300})
+                                  "enabled": True, "publication_seconds": 60})
         self.github.verify.assert_called_once()
         self.github.dispatch.assert_called_once()
         calls = self.client.call.call_args_list
@@ -53,7 +53,8 @@ class PublicationSchedulerTests(unittest.TestCase):
         self.assertEqual(job["url"], TARGET)
         self.assertEqual(job["requestMethod"], 1)
         self.assertEqual(json.loads(job["extendedData"]["body"]), {"ref": "main"})
-        self.assertEqual(job["schedule"]["minutes"], list(range(1, 60, 5)))
+        self.assertEqual(job["schedule"]["minutes"], [-1])
+        self.assertEqual(job["schedule"]["expiresAt"], 0)
         self.assertFalse(job["saveResponses"])
         self.assertFalse(job["redirectSuccess"])
         for private in (ADMIN, CRON, "private-session"):
@@ -85,6 +86,20 @@ class PublicationSchedulerTests(unittest.TestCase):
             self.configure([{"jobs": [self.job], "someFailed": False}])
         self.github.dispatch.assert_not_called()
         self.assertEqual(self.client.call.call_count, 1)
+
+    def test_saved_five_minute_job_is_upgraded_in_place_without_duplicates(self):
+        self.store.state["publication_job_id"] = 123
+        old = {**self.job, "title": LEGACY_TITLE, "schedule": {**SCHEDULE, "minutes": list(range(1, 60, 5))}}
+        self.configure([{"jobs": [old], "someFailed": False}, {"jobDetails": old}, {},
+                        {"jobDetails": {**self.job, "enabled": True}}])
+        calls = self.client.call.call_args_list
+        self.assertFalse(any(call.args[0] == "PUT" for call in calls))
+        self.assertEqual(calls[2].args[2]["job"]["schedule"]["minutes"], [-1])
+
+    def test_legacy_named_job_without_saved_identity_is_not_taken_over(self):
+        with self.assertRaises(ValueError):
+            self.configure([{"jobs": [{**self.job, "title": LEGACY_TITLE}], "someFailed": False}])
+        self.github.dispatch.assert_not_called()
 
     def test_non_numeric_task_never_forms_provider_url(self):
         with self.assertRaises(ValueError):

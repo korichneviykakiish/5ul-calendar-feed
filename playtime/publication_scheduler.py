@@ -13,9 +13,10 @@ WORKFLOW = "publish-vercel-report.yml"
 API = "https://api.github.com"
 PREFIX = "/repos/" + REPOSITORY
 TARGET = API + PREFIX + "/actions/workflows/" + WORKFLOW + "/dispatches"
-TITLE = "5ul public report - every 5 minutes"
+TITLE = "5ul public report - every minute"
+LEGACY_TITLE = "5ul public report - every 5 minutes"
 SCHEDULE = {"timezone": "UTC", "expiresAt": 0, "hours": [-1], "mdays": [-1],
-            "minutes": list(range(1, 60, 5)), "months": [-1], "wdays": [-1]}
+            "minutes": [-1], "months": [-1], "wdays": [-1]}
 BODY = {"ref": "main"}
 API_VERSION = "2022-11-28"
 
@@ -58,9 +59,10 @@ class GitHubPublisher:
         self.call("POST", PREFIX + "/actions/workflows/" + WORKFLOW + "/dispatches", 204, BODY)
 
 
-def own_job(client, identifier):
+def own_job(client, identifier, allow_legacy=False):
     job = client.call("GET", "/jobs/" + job_id(identifier)).get("jobDetails")
-    if not isinstance(job, dict) or job.get("url") != TARGET or job.get("title") != TITLE:
+    titles = {TITLE, LEGACY_TITLE} if allow_legacy else {TITLE}
+    if not isinstance(job, dict) or job.get("url") != TARGET or job.get("title") not in titles:
         raise ValueError("Publication job identity mismatch")
     return job
 
@@ -78,7 +80,7 @@ def configure(store, client=None, github=None):
         if listing.get("someFailed") is not False or not isinstance(listing.get("jobs"), list):
             raise ValueError("Incomplete scheduler listing; no publication task created")
         matches = [job for job in listing["jobs"] if job.get("url") == TARGET]
-        if len(matches) > 1 or (matches and matches[0].get("title") != TITLE):
+        if len(matches) > 1 or (matches and matches[0].get("title") not in {TITLE, LEGACY_TITLE}):
             raise ValueError("Existing publication task needs operator review")
         identifier = matches[0]["jobId"] if matches else None
         saved = state.get("publication_job_id")
@@ -86,8 +88,10 @@ def configure(store, client=None, github=None):
             job_id(saved)
             if saved != identifier:
                 raise ValueError("Saved publication task is missing or different")
+        if matches and matches[0].get("title") == LEGACY_TITLE and saved != identifier:
+            raise ValueError("Legacy publication task must match the saved identity")
         if identifier is not None:
-            own_job(client, identifier)
+            own_job(client, identifier, allow_legacy=saved == identifier)
         github.verify()
         # Verify Actions write access before storing the dedicated token in cron-job.org.
         github.dispatch()
@@ -117,7 +121,7 @@ def configure(store, client=None, github=None):
         state["publication_job_id"] = identifier
         store.save(state)
         return {"status": "publication_schedule_ready", "job_id": identifier,
-                "enabled": True, "publication_seconds": 300}
+                "enabled": True, "publication_seconds": 60}
     finally:
         store.release()
 
@@ -127,7 +131,7 @@ def status(store, client=None):
     if identifier is None:
         return {"status": "publication_not_configured", "enabled": False}
     client = client or CronClient(os.environ["CRONJOB_API_KEY"])
-    job = own_job(client, identifier)
+    job = own_job(client, identifier, allow_legacy=True)
     rows = client.call("GET", "/jobs/" + job_id(identifier) + "/history").get("history")
     if not isinstance(rows, list):
         raise ValueError("Invalid publication scheduler history")

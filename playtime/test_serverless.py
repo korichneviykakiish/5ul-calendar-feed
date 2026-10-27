@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 from api.playtime import handler
 from playtime.model import apply_sample, new_state
 from playtime.serverless import handle, initialize_empty, public_report, tick, configuration, configured_store
-from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE, FORGET
+from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE, FORGET, UnsupportedCommand
 from playtime.vrchat import ApiFailure, Client
 
 CONFIG = {**configuration(), "world_id": "wrld_test"}
@@ -181,6 +181,7 @@ class HttpTests(unittest.TestCase):
     def test_cron_cannot_initialize_or_erase_state(self, store):
         self.assertEqual(handle("POST", "Bearer " + CRON, "initialize")[0], 401)
         self.assertEqual(handle("POST", "Bearer " + CRON, "forget-previous-world")[0], 401)
+        self.assertEqual(handle("POST", "Bearer " + CRON, "storage-status")[0], 401)
         store.assert_not_called()
 
     @patch.dict("os.environ", {**ENV, "PLAYTIME_ENABLED": "false", "VRC_USERNAME": "bot"}, clear=True)
@@ -388,7 +389,43 @@ class RedisStoreTests(unittest.TestCase):
     def test_release_is_conditional_on_owner(self):
         self.store.lease = "owner"
         self.store.release()
-        self.store.command.assert_called_once_with("EVAL", RELEASE, 1, self.store.prefix + ":lock", "owner")
+        self.store.command.assert_called_once_with("DELEX", self.store.prefix + ":lock", "IFEQ", "owner")
+
+    def test_older_backend_releases_with_the_same_safe_lua_condition(self):
+        self.store.lease = "owner"
+        self.store.command.side_effect = [UnsupportedCommand(), 1]
+        self.store.release()
+        self.assertEqual(self.store.command.call_args_list[-1].args,
+                         ("EVAL", RELEASE, 1, self.store.prefix + ":lock", "owner"))
+
+    def test_network_failure_does_not_trigger_a_second_release_request(self):
+        self.store.lease = "owner"
+        self.store.command.side_effect = RuntimeError("network unavailable")
+        with self.assertRaises(RuntimeError):
+            self.store.release()
+        self.store.command.assert_called_once()
+
+    def test_capability_check_uses_only_a_random_absent_key(self):
+        self.store.command.return_value = 0
+        self.assertTrue(self.store.native_release_supported())
+        args = self.store.command.call_args.args
+        self.assertEqual(args[0], "DELEX")
+        self.assertTrue(args[1].startswith(self.store.prefix + ":capability:"))
+        self.assertEqual(args[2:], ("IFEQ", "probe"))
+
+    def test_capability_check_reports_unsupported_without_erasing_anything(self):
+        self.store.command.side_effect = UnsupportedCommand()
+        self.assertFalse(self.store.native_release_supported())
+        self.store.command.assert_called_once()
+
+    def test_unknown_native_command_has_a_safe_specific_error(self):
+        session = Mock(headers={})
+        session.post.return_value.status_code = 200
+        session.post.return_value.json.return_value = {"error": "ERR unknown command DELEX: PRIVATE"}
+        store = RedisStore("https://test.upstash.io", "secret", self.key, "bot", "wrld_test", session)
+        with self.assertRaises(UnsupportedCommand) as error:
+            store.command("DELEX", "absent", "IFEQ", "token")
+        self.assertNotIn("PRIVATE", str(error.exception))
 
     def test_active_world_cannot_be_deleted(self):
         with self.assertRaises(ValueError):

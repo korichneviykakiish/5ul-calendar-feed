@@ -18,8 +18,9 @@ The existing calendar and the Unity scene are unchanged.
 The active counter runs on Vercel, triggered once per minute by cron-job.org.
 The original GitHub sampler is deleted. `publish-vercel-report.yml` only copies
 the sanitized public result to the existing trusted GitHub Pages URL; it receives
-no VRChat credentials and never logs in. It targets publication every five minutes
-(subject to GitHub scheduling delays), independent of the one-minute API sampling.
+no VRChat credentials and never logs in. A separate cron-job.org task dispatches
+publication every minute, independently of the minute API sampling. GitHub's
+native schedule is removed. Queues and Pages deployment can still delay visibility.
 Unity keeps its existing URL. The old encrypted checkpoints are not imported.
 
 For the separately deployed one-minute Vercel adapter, see [VERCEL.md](VERCEL.md).
@@ -27,8 +28,8 @@ It uses persistent encrypted state and an external scheduler, not GitHub Actions
 The GitHub workflow cannot log in or sample, even when enabled manually.
 
 `publish-vercel-report` is a short scheduled report job, not a continuously running game client.
-The schedule targets every five minutes, away from the top of the hour. GitHub can delay or
-drop scheduled runs. Treat totals as estimates, not authoritative exact attendance or anti-cheat.
+The external schedule has no end date and does not rely on a personal computer.
+Treat totals as estimates, not authoritative exact attendance or anti-cheat.
 
 Two successful sightings in the configured world accrue the actual elapsed time, capped by
 `max_gap_seconds` (600). A gap beyond that threshold or a failed/partial sample breaks continuity.
@@ -88,8 +89,8 @@ authenticator seed, not a six-digit code; never put either in inputs, source, lo
    identity instead of creating duplicates. Monitor `schedule-status` and the actual last success.
 5. GitHub Actions `publish-vercel-report` -> `Run workflow` publishes the current Vercel public JSON.
    This never logs in, samples VRChat or recreates the retired GitHub checkpoint archive.
-6. Verify an actual `schedule` run and the Pages `updated` timestamp before claiming automatic
-   publication works. A successful manual publication is not evidence of a working cron schedule.
+6. Verify external task history, the corresponding successful Actions runs and the Pages
+   `updated` timestamp. A successful manual publication is not evidence of an external clock.
 
 Unity retains `https://korichneviykakiish.github.io/5ul-calendar-feed/playtime.json`.
 Do not enable the old Actions `PLAYTIME_ENABLED` variable: it is no longer used for sampling.
