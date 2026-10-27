@@ -1,7 +1,9 @@
 # One-minute sampling on Vercel
 
 This adapter runs the existing API counter on Vercel, not on GitHub Actions.
-It does not launch VRChat, enable the calendar, change Unity, or reset player hours.
+It does not launch VRChat, enable the calendar or change Unity. By the owner's
+request, this deployment starts a **new empty counter** and never imports old hours.
+Existing GitHub checkpoints and reports are left untouched.
 Deploying code alone does **not** enable the schedule. Production remains disabled
 unless explicitly configured, initialized and verified. Do not enable paid services
 or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
@@ -47,7 +49,9 @@ Keep Fluid Compute enabled. Add variables securely in Vercel, scoped to Producti
 - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`: an owned durable Redis database,
   not an anonymous temporary database. Use its primary REST endpoint.
 - `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`, `VRC_CONTACT`.
-- `VRC_SESSION_KEY`: **the original encryption key**, not a newly generated replacement.
+- `VRC_SESSION_KEY`: a new Fernet encryption key for this new counter. Keep it backed
+  up securely and do not rotate it after initialization without a recovery plan.
+  Do not replace the existing GitHub counter's key.
 - `CRON_SECRET`: independent random ASCII secret, at least 32 characters.
 - `PLAYTIME_ADMIN_SECRET`: different random ASCII secret, at least 32 characters.
 - `PLAYTIME_ENABLED=false` until cutover checks are ready; then `true` and redeploy.
@@ -61,17 +65,18 @@ invocations per 30 days, plus monitoring/report readers.
 ## Safe cutover
 
 1. Run local unit tests and deploy **disabled**. Keep the current service and data.
-2. Pause old GitHub sampling, wait for active jobs to finish, and retain its latest
-   encrypted checkpoints. Do not run two hosts against the same counter/account.
-3. Import using `python -m playtime.serverless --import-github` from a trusted
-   operator environment with the original `VRC_SESSION_KEY`, `VRC_USERNAME`,
-   `GITHUB_REPOSITORY`, scoped `GH_TOKEN`, and the two Upstash variables. This reads
-   GitHub's latest encrypted checkpoint, preserves totals and original last-success
-   timestamp, clears old-host cookies, and refuses to overwrite existing Redis state.
-   GitHub's source checkpoints are not edited or deleted. Keep the encryption key
-   and an encrypted off-provider backup securely; never commit either.
-4. Compare old/new totals via public reports before enabling production. Perform
-   exactly one manual `resume` on the deployed host. If challenged, stop and complete
+2. Pause old GitHub sampling and wait for active jobs to finish before logging in
+   on the new host. Do not delete or migrate old hours, checkpoints or reports.
+   Do not run two hosts against the same bot account.
+3. Initialize using `python -m playtime.serverless --initialize-empty` from a trusted
+   operator environment with `VRC_SESSION_KEY`, `VRC_USERNAME` and the two Upstash
+   variables. No GitHub token is needed and no old data is read. This creates empty
+   state only if it does not already exist; repeating initialization cannot erase
+   hours subsequently earned on Vercel. Keep the new encryption key and an encrypted
+   off-provider backup securely; never commit either.
+4. Confirm the public report contains an empty leaderboard and no last-success
+   timestamp before enabling production. Perform exactly one manual `resume` on
+   the deployed host. If challenged, stop and complete
    the requested account verification; do not enable repeated login attempts.
 5. In a later minute, perform a normal `sample` using the saved session. Only after
    this succeeds create/enable the external one-minute schedule. Observe at least
@@ -84,8 +89,8 @@ invocations per 30 days, plus monitoring/report readers.
    Pages URLs will otherwise retain the old snapshot; the migration does not silently
    redirect them. Unity changes are a separate task. Calendar remains unchanged.
 
-Rollback after new samples requires exporting the newer Redis state back to the old
-host. Do not re-enable GitHub with an older checkpoint, which would lose accrued time.
+GitHub's old hours and Vercel's new hours are separate datasets. Re-enabling the
+old host will show old totals, not the new counter. Do not silently merge the two.
 
 ## Verification
 

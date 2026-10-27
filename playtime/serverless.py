@@ -9,10 +9,9 @@ import time
 from pathlib import Path
 
 from .auth import login_client
-from .model import interrupt, leaderboard
+from .model import interrupt, leaderboard, new_state
 from .run import process
 from .serverless_store import RedisStore
-from .storage import Store
 from .vrchat import ApiFailure, Client
 
 POLL_SECONDS = 60
@@ -113,25 +112,19 @@ def handle(method, authorization="", action="sample"):
         return 503, {"status": "check_failed", "sampled": False}
 
 
-def import_github():
+def initialize_empty():
     config = configuration()
-    source = Store(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"], os.environ["VRC_SESSION_KEY"],
-                   os.environ["VRC_USERNAME"], config["world_id"], allow_create=False)
-    state = source.load()
-    state = interrupt(state, "waiting_for_login", int(time.time()))
-    state["cookies"] = {}
-    state.pop("last_tick", None)
-    state.pop("last_attempt", None)
+    state = new_state(os.environ["VRC_USERNAME"], config["world_id"])
     configured_store(config).initialize(state)
-    print("[playtime] Existing totals imported; source unchanged; manual login required")
+    print("[playtime] Empty counter initialized; no old hours read; manual login required")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--import-github", action="store_true", required=True)
+    parser.add_argument("--initialize-empty", action="store_true", required=True)
     parser.parse_args()
     try:
-        import_github()
+        initialize_empty()
     except Exception as error:
-        print("[playtime] Import stopped safely: " + type(error).__name__)
+        print("[playtime] Initialization stopped safely: " + type(error).__name__)
         raise SystemExit(1) from None

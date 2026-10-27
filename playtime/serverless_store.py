@@ -76,7 +76,7 @@ class RedisStore:
     def load(self):
         payload = self.command("GET", self.prefix + ":state")
         if not isinstance(payload, str) or len(payload) > MAX_BYTES:
-            raise RuntimeError("Checkpoint missing; import existing hours before enabling")
+            raise RuntimeError("Checkpoint missing; explicitly initialize the new counter before enabling")
         state = json.loads(self.cipher.decrypt(payload.encode("ascii")))
         validate_state(state, self.account, self.world_id)
         for name in ("last_tick", "last_attempt"):

@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 
 from api.playtime import handler
 from playtime.model import apply_sample, new_state
-from playtime.serverless import handle, import_github, public_report, tick, configuration
+from playtime.serverless import handle, initialize_empty, public_report, tick, configuration
 from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE
 from playtime.vrchat import ApiFailure, Client
 
@@ -249,7 +249,7 @@ class RedisStoreTests(unittest.TestCase):
                 self.store.load()
         self.assertTrue(all(call.args[0] == "GET" for call in self.store.command.call_args_list))
 
-    def test_existing_checkpoint_cannot_be_overwritten_by_import(self):
+    def test_existing_checkpoint_cannot_be_overwritten_by_initialization(self):
         self.store.command.return_value = None
         with self.assertRaises(RuntimeError):
             self.store.initialize(self.state)
@@ -314,29 +314,20 @@ class RequestBudgetTests(unittest.TestCase):
         self.assertEqual(session.request.call_args.kwargs["timeout"], (10, 25))
 
 
-class ImportTests(unittest.TestCase):
-    @patch.dict("os.environ", {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "secret",
-                               "VRC_SESSION_KEY": "key", "VRC_USERNAME": "bot"}, clear=True)
+class InitializationTests(unittest.TestCase):
+    @patch.dict("os.environ", {"VRC_USERNAME": "bot"}, clear=True)
     @patch("playtime.serverless.configured_store")
-    @patch("playtime.serverless.Store")
-    def test_import_retains_hours_and_does_not_edit_source(self, source, destination):
-        state = apply_sample(new_state("bot", CONFIG["world_id"]), [FRIEND], 1200, 77, 600)
-        state = apply_sample(state, [FRIEND], 1500, 78, 600)
-        state["cookies"] = {"auth": "old-host"}
-        state["revision"] = 90
-        before = copy.deepcopy(state)
-        source.return_value.load.return_value = state
-        import_github()
-        imported = destination.return_value.initialize.call_args.args[0]
-        self.assertEqual(imported["players"]["usr_one"]["seconds"], 300)
-        self.assertEqual(imported["last_success"], 1500)
-        self.assertEqual(imported["revision"], 90)
-        self.assertEqual(imported["cookies"], {})
-        self.assertEqual(imported["status"], "waiting_for_login")
-        self.assertIsNone(imported["last_sample"])
-        self.assertEqual(state, before)
-        source.return_value.save.assert_not_called()
-        self.assertFalse(source.call_args.kwargs["allow_create"])
+    @patch("playtime.storage.Store")
+    def test_new_counter_starts_empty_without_reading_github(self, old_store, destination):
+        initialize_empty()
+        state = destination.return_value.initialize.call_args.args[0]
+        self.assertEqual(state["players"], {})
+        self.assertIsNone(state["last_success"])
+        self.assertEqual(state["revision"], 0)
+        self.assertEqual(state["last_run"], 0)
+        self.assertEqual(state["cookies"], {})
+        self.assertEqual(state["status"], "waiting_for_login")
+        old_store.assert_not_called()
 
 
 if __name__ == "__main__":
