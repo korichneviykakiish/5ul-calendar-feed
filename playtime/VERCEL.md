@@ -50,10 +50,21 @@ Sampling normally has an 18-second API budget, leaving room for state persistenc
 within cron-job.org's 30-second HTTP timeout. Network stalls/manual authentication
 can still exceed that timeout; monitor last successful sample, not only HTTP triggers.
 
-The scheduler **does not password-login every minute**. Only an explicit operator
-resume can log in. Rejected/expired sessions pause sampling. Vercel's outbound IPs
-are not fixed on Hobby, so repeated session rejection remains a deployment blocker,
-not a reason to add automatic login retries or switch IPs.
+The scheduler **does not password-login every minute**. Normal polls reuse cookies.
+The owner enabled `auto_recover_session` in `playtime/config.json`: only a known
+401 missing-credentials/unauthorized response during session verification, with
+exactly one auth cookie actually sent and no Basic login header, marks recovery
+eligible. It runs on a later minute and never bootstraps a new/unknown session.
+
+Automatic recovery is limited to one attempt per six hours, counting manual login
+timestamps too. The attempt and a hard-stop latch are saved before credentials are
+sent. Failure, timeout/crash, rejected new session, email challenge, 403 or 429
+prevents another automatic login until a successful operator resume. Server
+Retry-After always wins; no IP switching or repeated attempts to bypass rejection.
+Operator `recovery-status` returns eligibility, the safe attempt counter, method,
+timestamp and cooldown, never credentials. Set `auto_recover_session` to false to
+disable the feature. Vercel Hobby outbound IPs remain dynamic; this mechanism does
+not guarantee uninterrupted attendance or make sessions permanent.
 
 Hours remain estimates from two consecutive successful sightings. The existing
 600-second maximum observation gap is unchanged. Rate-limit backoff remains at
@@ -167,7 +178,7 @@ a second VRChat sampler. The calendar's workflow remains separately disabled.
 `python -m unittest discover -v`
 
 Tests cover 60-second accounting, duplicate minutes, leases, stale writes, missing
-storage, pre-request checkpoints, manual-only login, authentication isolation,
+storage, pre-request checkpoints, bounded automatic recovery, authentication isolation,
 rate-limit delays, request budgets, public data hygiene and preview safety.
 Live Redis scripting, deployment, credentials, scheduler and VRChat access still need
 real checks; local tests alone cannot confirm any of those external services.

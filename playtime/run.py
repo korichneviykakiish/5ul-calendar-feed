@@ -65,11 +65,20 @@ def process(state, client, config, run_number, now=None):
         state = apply_sample(state, friends, sampled, run_number, config["max_gap_seconds"])
         # Joining is explicit opt-in. Accept incoming requests only, never send any.
         accepted = client.accept_requests(config["max_friend_requests_per_run"])
+        state["session_recovery_pending"] = False
         in_world = sum(1 for row in state["players"].values() if row["present"])
         print("[playtime] Sample complete; online friends=" + str(len(friends))
               + "; in configured world=" + str(in_world) + "; accepted=" + str(accepted))
     except ApiFailure as error:
         state = interrupt(state, error.status, int(time.time()), error.retry_after)
+        rejected = (error.session_rejected and error.status == "login_required"
+                    and error.operation == "verify-session" and error.http_status == 401
+                    and error.reason in {"missing-credentials", "unauthorized"})
+        state["session_recovery_pending"] = rejected and state["last_success"] is not None
+        if (error.status in {"access_denied", "rate_limited", "configuration_error"}
+                or error.http_status == 429
+                or (error.status == "login_required" and not rejected)):
+            state["auto_login_blocked"] = True
         cookies = client.cookies()
         print("[playtime] Sampling paused: " + json.dumps({
             "status": error.status,

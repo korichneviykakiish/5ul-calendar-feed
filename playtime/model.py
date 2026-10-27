@@ -25,6 +25,15 @@ def validate_state(state, account, world_id):
     for key in ("last_sample", "last_success"):
         if state.get(key) is not None and (type(state[key]) is not int or state[key] < 0):
             raise ValueError("Invalid sample timestamp")
+    for key in ("last_login_attempt_at", "auto_login_attempts"):
+        if key in state and (type(state[key]) is not int or state[key] < 0):
+            raise ValueError("Invalid recovery counter")
+    for key in ("session_recovery_pending", "auto_login_blocked"):
+        if key in state and type(state[key]) is not bool:
+            raise ValueError("Invalid recovery flag")
+    if "last_login_method" in state and (not isinstance(state["last_login_method"], str)
+                                         or state["last_login_method"] not in {"manual", "automatic"}):
+        raise ValueError("Invalid recovery method")
     if not isinstance(state.get("cookies"), dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in state["cookies"].items()
     ):

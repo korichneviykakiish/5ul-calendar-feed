@@ -11,13 +11,15 @@ API = "https://api.vrchat.cloud/api/1"
 
 
 class ApiFailure(Exception):
-    def __init__(self, status, retry_after=0, operation="api", http_status=0, reason="unspecified"):
+    def __init__(self, status, retry_after=0, operation="api", http_status=0, reason="unspecified",
+                 session_rejected=False):
         super().__init__(status)
         self.status = status
         self.retry_after = retry_after
         self.operation = operation
         self.http_status = http_status
         self.reason = reason
+        self.session_rejected = session_rejected is True
 
 
 def auth_reason(response):
@@ -67,9 +69,10 @@ class Client:
                                             timeout=timeout, allow_redirects=False)
         except requests.RequestException:
             raise ApiFailure("network_error", operation=operation) from None
+        flags = request_cookie_flags(response) if operation == "verify-session" else {}
         if operation == "verify-session":
             print("[playtime] SESSION_REQUEST " + json.dumps({
-                "status": response.status_code, **request_cookie_flags(response),
+                "status": response.status_code, **flags,
             }))
         if response.status_code == 429:
             reason = auth_reason(response)
@@ -77,7 +80,11 @@ class Client:
             raise ApiFailure(status, retry_delay(response.headers.get("Retry-After", "")),
                              operation, 429, reason)
         if response.status_code == 401:
-            raise ApiFailure("login_required", operation=operation, http_status=401, reason=auth_reason(response))
+            reason = auth_reason(response)
+            rejected = (operation == "verify-session" and reason in {"missing-credentials", "unauthorized"}
+                        and flags.get("auth_cookie_count") == 1 and flags.get("basic_header_sent") is False)
+            raise ApiFailure("login_required", operation=operation, http_status=401, reason=reason,
+                             session_rejected=rejected)
         if response.status_code == 403:
             raise ApiFailure("access_denied", operation=operation, http_status=403, reason=auth_reason(response))
         if response.status_code != 200:

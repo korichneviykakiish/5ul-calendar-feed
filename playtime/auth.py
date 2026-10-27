@@ -1,4 +1,4 @@
-"""One explicit TOTP login on the sampling runner, with no authentication retries."""
+"""One TOTP login on the sampling runner; retry policy belongs to the caller."""
 
 import requests
 

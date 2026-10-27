@@ -48,10 +48,13 @@ Older requests beyond that cap require administrator review; notifications are n
 Failed, duplicate or incomplete friend-list pages never become a valid empty snapshot.
 Requests are bounded; there are no retry loops.
 
-Normal Vercel samples reuse the encrypted authenticated session. A password/TOTP login
-requires an explicit operator `resume`, never an automatic retry after rejection. No game
-client or always-on personal computer is needed. Vercel Hobby does not guarantee a fixed
-outbound IP; an expired or rejected session may still require manual recovery.
+Normal Vercel samples reuse the encrypted authenticated session. With the owner's
+`auto_recover_session: true` setting, an ordinary verified-session 401 permits one
+automatic password/TOTP recovery on a later minute, at most once per six hours.
+Only a known missing-credentials/unauthorized response to exactly one sent auth cookie
+qualifies, not a password failure, missing cookie, unknown response or email challenge.
+No game client or always-on personal computer is needed. Vercel Hobby does not guarantee
+a fixed outbound IP; some rejections will still require manual recovery.
 
 ## Storage and publication
 
@@ -84,7 +87,8 @@ authenticator seed, not a six-digit code; never put either in inputs, source, lo
 1. Verify the configured world, public opt-in notice and durable encrypted storage.
 2. Initialize only an absent counter; existing state must not be overwritten.
 3. Request one manual `resume` on Vercel and verify a subsequent normal sample in a later minute.
-   Stop on a challenge or cooldown; do not automatically retry authentication.
+   Stop on a challenge or cooldown. Automatic recovery does not bootstrap a new counter
+   or adopt an old login-required state without qualifying rejection evidence.
 4. Enable the external minute task only after two fresh successful samples; reuse its saved
    identity instead of creating duplicates. Monitor `schedule-status` and the actual last success.
 5. GitHub Actions `publish-vercel-report` -> `Run workflow` publishes the current Vercel public JSON.
@@ -94,6 +98,13 @@ authenticator seed, not a six-digit code; never put either in inputs, source, lo
 
 Unity retains `https://korichneviykakiish.github.io/5ul-calendar-feed/playtime.json`.
 Do not enable the old Actions `PLAYTIME_ENABLED` variable: it is no longer used for sampling.
+
+The recovery attempt and a hard-stop latch are saved before sending credentials. A crash,
+failed login, rejected new session, security challenge or rate/access restriction cannot
+cause another automatic login. A successful operator `resume` can clear the latch, but
+never bypasses a server cooldown. The attempt timestamp also limits later automatic
+logins after manual recovery. `recovery-status` exposes only safe operator diagnostics;
+none of these private flags are published in the leaderboard.
 
 On a rejected login, additional email confirmation or invalid secrets, sampling pauses
 pending manual recovery. On 429 it stores a
