@@ -252,7 +252,7 @@ def stop_if_rate_limited(response, stage="authentication"):
         status=status, retry_after=retry_delay(retry_after), reason=category)
 
 
-def login(s, action="auto"):
+def login(s, action="auto", persist=True):
     if not USERNAME or not PASSWORD:
         die("VRC_USERNAME/VRC_PASSWORD не заданы (secrets репозитория)")
 
@@ -270,7 +270,8 @@ def login(s, action="auto"):
                 "). Проверь последний код; если истёк, запусти request-email.")
         if not session_alive(s):
             die("Код принят, но сессия не подтверждена. Публикация остановлена.")
-        save_session(s)
+        if persist:
+            save_session(s)
         log("email verification successful; encrypted session saved")
         return True
 
@@ -308,7 +309,8 @@ def login(s, action="auto"):
         if "emailOtp" in methods:
             if not requests.utils.dict_from_cookiejar(s.cookies).get("auth"):
                 die("VRChat не вернул сессию для кода из письма; публикация остановлена.")
-            save_session(s)
+            if persist:
+                save_session(s)
             message = ("VRChat запросил код из письма. Добавь его в Repository secret "
                        "VRC_EMAIL_CODE и запусти Run workflow > verify-email. "
                        "Код не вводить в чат, файлы или поля Run workflow.")
@@ -332,8 +334,9 @@ def login(s, action="auto"):
             die("после 2FA сессия так и не поднялась")
     elif not str(body.get("id", "")).startswith("usr_") or not session_alive(s):
         die("Login did not produce a reusable authenticated session.")
-    save_session(s)
-    log("логин успешен, кука сохранена")
+    if persist:
+        save_session(s)
+    log("логин успешен, кука сохранена" if persist else "login successful; session kept in memory")
     return True
 
 

@@ -1,0 +1,98 @@
+# One-minute sampling on Vercel
+
+This adapter runs the existing API counter on Vercel, not on GitHub Actions.
+It does not launch VRChat, enable the calendar, change Unity, or reset player hours.
+Deploying code alone does **not** enable the schedule. Production remains disabled
+unless explicitly configured, initialized and verified. Do not enable paid services
+or enter passwords/TOTP seeds into source, chat, scheduler URLs or logs.
+
+## Runtime
+
+- `POST /api/playtime`: one sample, authenticated by `Authorization: Bearer <CRON_SECRET>`.
+- External scheduler: **every minute** (`* * * * *`, all minutes/hours/days).
+  For cron-job.org use POST, that Authorization header, no request body, and no
+  `X-Playtime-Action` header. Disable automatic job disabling on repeated failures;
+  enable failure notifications. A paused login must remain visibly unhealthy.
+- `GET /playtime.json` (also `/api/playtime`): public sanitized leaderboard only.
+  Reading the report never logs in or polls VRChat. Public responses cache for 60s.
+- `POST /api/playtime`, `X-Playtime-Action: resume`: one operator-requested login,
+  requiring the **different** `PLAYTIME_ADMIN_SECRET` bearer token. Never give that
+  token/header to the scheduler. It still honors Retry-After and the minute gate.
+
+An encrypted Upstash Redis checkpoint retains the authenticated session across
+invocations. A 330-second ownership-checked lease prevents overlapping workers;
+Vercel hard timeout is 300s. A minute marker is persisted before external effects.
+Repeated triggers in the same UTC minute are skipped. A slow invocation may skip
+the next minute: no overlapping requests or invented attendance to compensate.
+Sampling normally has an 18-second API budget, leaving room for state persistence
+within cron-job.org's 30-second HTTP timeout. Network stalls/manual authentication
+can still exceed that timeout; monitor last successful sample, not only HTTP triggers.
+
+The scheduler **does not password-login every minute**. Only an explicit operator
+resume can log in. Rejected/expired sessions pause sampling. Vercel's outbound IPs
+are not fixed on Hobby, so repeated session rejection remains a deployment blocker,
+not a reason to add automatic login retries or switch IPs.
+
+Hours remain estimates from two consecutive successful sightings. The existing
+600-second maximum observation gap is unchanged. Rate-limit backoff remains at
+least one hour and honors a longer server Retry-After. Requests remain spaced 2s.
+The previous checkpoint is retained atomically alongside the latest one. Missing,
+corrupt or wrong-account checkpoints stop checks instead of initializing zeroes.
+
+## Configuration (production only)
+
+Vercel project: import this repository, Python runtime, no frontend build command.
+Keep Fluid Compute enabled. Add variables securely in Vercel, scoped to Production:
+
+- `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`: an owned durable Redis database,
+  not an anonymous temporary database. Use its primary REST endpoint.
+- `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`, `VRC_CONTACT`.
+- `VRC_SESSION_KEY`: **the original encryption key**, not a newly generated replacement.
+- `CRON_SECRET`: independent random ASCII secret, at least 32 characters.
+- `PLAYTIME_ADMIN_SECRET`: different random ASCII secret, at least 32 characters.
+- `PLAYTIME_ENABLED=false` until cutover checks are ready; then `true` and redeploy.
+
+`VERCEL_ENV=production` is supplied by Vercel. Preview deployments cannot poll.
+GitHub credentials are NOT needed for normal execution on Vercel. Public report
+GETs and sampling consume storage/function quotas; verify actual monthly usage
+before promising that a deployment is free. One-minute scheduling is ~43,200
+invocations per 30 days, plus monitoring/report readers.
+
+## Safe cutover
+
+1. Run local unit tests and deploy **disabled**. Keep the current service and data.
+2. Pause old GitHub sampling, wait for active jobs to finish, and retain its latest
+   encrypted checkpoints. Do not run two hosts against the same counter/account.
+3. Import using `python -m playtime.serverless --import-github` from a trusted
+   operator environment with the original `VRC_SESSION_KEY`, `VRC_USERNAME`,
+   `GITHUB_REPOSITORY`, scoped `GH_TOKEN`, and the two Upstash variables. This reads
+   GitHub's latest encrypted checkpoint, preserves totals and original last-success
+   timestamp, clears old-host cookies, and refuses to overwrite existing Redis state.
+   GitHub's source checkpoints are not edited or deleted. Keep the encryption key
+   and an encrypted off-provider backup securely; never commit either.
+4. Compare old/new totals via public reports before enabling production. Perform
+   exactly one manual `resume` on the deployed host. If challenged, stop and complete
+   the requested account verification; do not enable repeated login attempts.
+5. In a later minute, perform a normal `sample` using the saved session. Only after
+   this succeeds create/enable the external one-minute schedule. Observe at least
+   two scheduled successful samples and incoming request acceptance.
+6. Switch report consumers deliberately to the new verified URL. Check VRChat's
+   String Loading trusted-domain rules first: a new Vercel domain is not assumed
+   equivalent to the currently trusted GitHub Pages domain. Keeping the old URL
+   needs a separate verified publication bridge; this adapter does not provide one.
+   Existing GitHub
+   Pages URLs will otherwise retain the old snapshot; the migration does not silently
+   redirect them. Unity changes are a separate task. Calendar remains unchanged.
+
+Rollback after new samples requires exporting the newer Redis state back to the old
+host. Do not re-enable GitHub with an older checkpoint, which would lose accrued time.
+
+## Verification
+
+`python -m unittest discover -v`
+
+Tests cover 60-second accounting, duplicate minutes, leases, stale writes, missing
+storage, pre-request checkpoints, manual-only login, authentication isolation,
+rate-limit delays, request budgets, public data hygiene and preview safety.
+Live Redis scripting, deployment, credentials, scheduler and VRChat access still need
+real checks; local tests alone cannot confirm any of those external services.

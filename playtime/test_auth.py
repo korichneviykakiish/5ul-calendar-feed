@@ -55,6 +55,19 @@ class LoginTests(unittest.TestCase):
                 self.assertEqual(failed.exception.status, "configuration_error")
         self.session.get.assert_not_called()
 
+    def test_serverless_login_does_not_write_a_local_cookie_file(self):
+        self.session.get.side_effect = [response({"requiresTwoFactorAuth": ["totp"]}), response({"id": "usr_bot"})]
+        self.session.post.return_value = response({"verified": True})
+        self.assertIs(login_client(2, persist=False).session, self.session)
+        fetch_events.save_session.assert_not_called()
+
+    def test_serverless_email_challenge_does_not_write_local_files(self):
+        self.session.cookies.set("auth", "pending", domain="api.vrchat.cloud")
+        self.session.get.return_value = response({"requiresTwoFactorAuth": ["emailOtp"]})
+        with self.assertRaises(ApiFailure):
+            login_client(2, persist=False)
+        fetch_events.save_session.assert_not_called()
+
     def test_login_rate_limit_is_structured_without_retry(self):
         self.session.get.return_value = response({"error": {"message": "Too many requests"}}, 429,
                                                  {"Retry-After": "7200"})

@@ -15,6 +15,10 @@ The existing calendar and the Unity scene are unchanged.
 
 ## Operation
 
+For the separately deployed one-minute Vercel adapter, see [VERCEL.md](VERCEL.md).
+It uses persistent encrypted state and an external scheduler, not GitHub Actions.
+The GitHub schedule below is unchanged until a verified cutover.
+
 `publish-playtime` is a short scheduled report job, not a continuously running game client.
 The schedule targets every five minutes, away from the top of the hour. GitHub can delay or
 drop scheduled runs. Treat totals as estimates, not authoritative exact attendance or anti-cheat.

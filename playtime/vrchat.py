@@ -38,24 +38,33 @@ def auth_reason(response):
 
 
 class Client:
-    def __init__(self, cookies, contact, spacing=2, session=None, sleep=time.sleep):
+    def __init__(self, cookies, contact, spacing=2, session=None, sleep=time.sleep, deadline=None):
         self.session = session or requests.Session()
         self.session.headers["User-Agent"] = user_agent(contact)
         self.session.headers["Accept"] = "application/json"
         self.sleep = sleep
         self.spacing = spacing
         self.calls = 0
+        self.deadline = deadline
         for name in ("auth", "twoFactorAuth"):
             if cookies.get(name):
                 self.session.cookies.set(name, cookies[name], domain="api.vrchat.cloud", secure=True)
 
     def call(self, method, path, params=None, operation="api"):
+        if self.deadline is not None and time.monotonic() + self.spacing >= self.deadline:
+            raise ApiFailure("time_budget", operation=operation)
         if self.calls:
             self.sleep(self.spacing)
         self.calls += 1
+        timeout = (10, 25)
+        if self.deadline is not None:
+            remaining = self.deadline - time.monotonic()
+            if remaining < 1:
+                raise ApiFailure("time_budget", operation=operation)
+            timeout = (min(3, remaining / 2), min(8, remaining / 2))
         try:
             response = self.session.request(method, API + path, params=params,
-                                            timeout=(10, 25), allow_redirects=False)
+                                            timeout=timeout, allow_redirects=False)
         except requests.RequestException:
             raise ApiFailure("network_error", operation=operation) from None
         if operation == "verify-session":

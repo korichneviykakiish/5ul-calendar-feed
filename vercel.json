@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/playtime.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{.git/**,.venv/**,state/**,**/test_*.py}"
+    }
+  },
+  "rewrites": [
+    { "source": "/playtime.json", "destination": "/api/playtime" }
+  ]
+}

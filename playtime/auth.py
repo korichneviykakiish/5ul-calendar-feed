@@ -6,7 +6,7 @@ from session_state import user_agent
 from .vrchat import ApiFailure, Client
 
 
-def login_client(spacing):
+def login_client(spacing, persist=True):
     # Reuse the calendar's tested login flow, but never its other runner's cookies.
     import fetch_events as auth
 
@@ -22,7 +22,8 @@ def login_client(spacing):
     session = requests.Session()
     session.headers["User-Agent"] = user_agent(auth.CONTACT)
     try:
-        if not auth.login(session, "auto"):
+        confirmed = auth.login(session, "auto") if persist else auth.login(session, "auto", persist=False)
+        if not confirmed:
             raise ApiFailure("login_required", operation="login", reason="email-confirmation-required")
     except auth.LoginFailure as error:
         raise ApiFailure(error.status, error.retry_after, operation="login", reason=error.reason) from None

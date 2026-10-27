@@ -2,3 +2,6 @@ state/
 __pycache__/
 *.pyc
 .venv/
+.vercel/
+.env
+.env.*
