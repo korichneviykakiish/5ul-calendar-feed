@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -62,6 +63,18 @@ class PublicReportTests(unittest.TestCase):
         factory.return_value.open.return_value.__exit__ = Mock(return_value=False)
         with self.assertRaises(ValueError):
             fetch_report()
+
+
+class PublicationWorkflowTests(unittest.TestCase):
+    def test_only_publisher_is_enabled_without_vrchat_credentials(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/playtime.yml").read_text(encoding="utf-8")
+        self.assertIn("python -m playtime.publish", workflow)
+        self.assertIn("actions/deploy-pages@v5", workflow)
+        self.assertIn("schedule:", workflow)
+        for forbidden in ("secrets.", "VRC_", "playtime.run", "inputs:", "PLAYTIME_ENABLED"):
+            self.assertNotIn(forbidden, workflow)
+        self.assertFalse((root / ".github/workflows/publish-vercel-report.yml").exists())
 
 
 if __name__ == "__main__":

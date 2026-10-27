@@ -3,7 +3,8 @@
 This adapter runs the existing API counter on Vercel, not on GitHub Actions.
 It does not launch VRChat, enable the calendar or change Unity. By the owner's
 request, this deployment starts a **new empty counter** and never imports old hours.
-Existing GitHub checkpoints and reports are left untouched.
+The retired world's Redis state and GitHub checkpoint archive were subsequently
+removed at the owner's explicit request. Active hours are preserved.
 
 The target is the published world `wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21`,
 as requested by the owner, across all instances visible to the bot. World IDs scope
@@ -110,13 +111,14 @@ invocations per 30 days, plus monitoring/report readers.
    String Loading trusted-domain rules first: a new Vercel domain is not assumed
    equivalent to the currently trusted GitHub Pages domain. Keeping the old URL
    needs a separate verified publication bridge; this adapter does not provide one.
-   `publish-vercel-report.yml` now provides that bridge for the existing Pages URL:
+   `playtime.yml` now provides that bridge for the existing Pages URL:
    it copies only the public sanitized JSON, without credentials or API sampling,
    approximately every five minutes. GitHub scheduling delays affect display
    freshness, not the counter's one-minute operation. Calendar remains unchanged.
 
-GitHub's old hours and Vercel's new hours are separate datasets. Re-enabling the
-old host will show old totals, not the new counter. Do not silently merge the two.
+The retired world's hours were not imported. The old GitHub sampling workflow
+has been replaced with public-report publication only: enabling it cannot create
+a second VRChat sampler. The calendar's workflow remains separately disabled.
 
 ## Verification
 

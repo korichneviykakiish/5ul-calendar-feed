@@ -16,7 +16,7 @@ The existing calendar and the Unity scene are unchanged.
 ## Operation
 
 The active counter runs on Vercel, triggered once per minute by cron-job.org.
-The original GitHub sampler is disabled. `publish-vercel-report.yml` only copies
+The original GitHub sampler is retired. `playtime.yml` now only copies
 the sanitized public result to the existing trusted GitHub Pages URL; it receives
 no VRChat credentials and never logs in. It targets publication every five minutes
 (subject to GitHub scheduling delays), independent of the one-minute API sampling.
@@ -24,7 +24,7 @@ Unity keeps its existing URL. The old encrypted checkpoints are not imported.
 
 For the separately deployed one-minute Vercel adapter, see [VERCEL.md](VERCEL.md).
 It uses persistent encrypted state and an external scheduler, not GitHub Actions.
-The GitHub sampling instructions below describe the disabled legacy workflow.
+The GitHub workflow cannot log in or sample, even when enabled manually.
 
 `publish-playtime` is a short scheduled report job, not a continuously running game client.
 The schedule targets every five minutes, away from the top of the hour. GitHub can delay or
@@ -47,20 +47,18 @@ Older requests beyond that cap require administrator review; notifications are n
 Failed, duplicate or incomplete friend-list pages never become a valid empty snapshot.
 Requests are bounded; there are no retry loops.
 
-The GitHub workflow explicitly enables `VRC_AUTH_PER_RUN=true`: each eligible run creates one
-fresh session using the bot password and a current TOTP code, samples on that same runner, then
-invalidates only that session with `PUT /logout`. A previous runner's IP-bound cookies are not
-restored. No game client or always-on personal computer is needed. The schedule is still subject
-to GitHub delays and VRChat authentication restrictions; this is not a promise of uninterrupted service.
+Normal Vercel samples reuse the encrypted authenticated session. A password/TOTP login
+requires an explicit operator `resume`, never an automatic retry after rejection. No game
+client or always-on personal computer is needed. Vercel Hobby does not guarantee a fixed
+outbound IP; an expired or rejected session may still require manual recovery.
 
 ## Storage and publication
 
-- `playtime-state-v1` release: authenticated-encrypted checkpoints using `VRC_SESSION_KEY`.
-- Checkpoints contain totals, last observations and run idempotency markers. Per-run login mode
-  does not retain the disposable runner session in the checkpoint.
-- The two newest checkpoints and one per day for up to seven observed days are retained.
-- Each new checkpoint is uploaded and verified before old files are deleted.
-- Checkpoints are replaceable release assets, not encrypted blobs committed every five minutes.
+- Upstash Redis holds authenticated-encrypted state using the Vercel `VRC_SESSION_KEY`.
+- Checkpoints contain totals, last observations, the session and run idempotency markers.
+- A previous checkpoint is retained atomically; leases prevent overlapping/stale writes.
+- The retired world's Redis state and GitHub release snapshots were explicitly deleted.
+- Active hours are never cleared by deployment, publication, sampling failure or initialization.
 - Missing/corrupt established storage or an account/world mismatch stops the job without resetting totals.
 - The encryption key must be backed up securely. Replacing it makes existing checkpoints unreadable.
 - `docs/playtime.json`: public top 120, in the existing Unity `updated` / `top` format.
@@ -68,9 +66,9 @@ to GitHub delays and VRChat authentication restrictions; this is not a promise o
 - Pages and Git commits share the calendar's concurrency lock to avoid competing publishers.
 - The original gist leaderboard is not read or overwritten.
 
-The code and state are small, but Actions runtime and repository history are not unlimited.
-Monitor GitHub usage. Private repositories consume included minutes; do not use perpetual jobs
-or chained restarts to simulate 24/7 hosting. This workflow publishes a static project report.
+Monitor Vercel, Redis and GitHub usage: code and state are small, but quotas and repository
+history are not unlimited. Do not use perpetual Actions jobs or chained restarts to simulate
+24/7 hosting. GitHub only publishes a static project report.
 
 ## Configuration and activation
 
@@ -78,31 +76,28 @@ The owner's requested published world is explicitly configured in `playtime/conf
 `wrld_bf7ec577-6b45-4aa2-839d-376b8a366c21`. All visible instances of that world
 are eligible. This is not inferred from the local Unity scene's Blueprint ID or the
 bot's own location. Friends whose location is hidden cannot be counted.
-The workflow reuses repository secrets `VRC_USERNAME`, `VRC_PASSWORD`, `VRC_TOTP_SECRET`,
-`VRC_CONTACT`, and `VRC_SESSION_KEY`. The password and TOTP seed are scoped to the sampling
-step's environment; they are never passed in workflow inputs, logs, or the public report.
+Configure runtime credentials only in Vercel Production as described in [VERCEL.md](VERCEL.md).
+The GitHub publisher receives none of these credentials. `VRC_TOTP_SECRET` is the permanent
+authenticator seed, not a six-digit code; never put either in inputs, source, logs or chat.
 
-1. Run `publish-playtime` with `action=publish` to initialize an empty counter and publish the report.
-   This does not send any VRChat request.
-2. Configure the five secrets above. `VRC_TOTP_SECRET` is the permanent authenticator seed,
-   not a six-digit code. Never put passwords or codes in workflow inputs, issues, source, or chat.
-3. Run `publish-playtime` with `action=resume`. It permits one login and sample even after a
-   previous authentication failure, but never overrides a rate-limit deadline. Confirm a second,
-   separate `action=sample` run works before enabling the schedule.
-4. Confirm `status=ok`, the world ID, opt-in profile text, and the published report. Only then set
-   the Actions repository variable `PLAYTIME_ENABLED=true` to enable scheduled samples.
-5. Point Unity's Playtime board at the new Pages `playtime.json` when ready. This setup does not
-   edit the world or replace its current leaderboard automatically.
+1. Verify the configured world, public opt-in notice and durable encrypted storage.
+2. Initialize only an absent counter; existing state must not be overwritten.
+3. Request one manual `resume` on Vercel and verify a subsequent normal sample in a later minute.
+   Stop on a challenge or cooldown; do not automatically retry authentication.
+4. Enable the external minute task only after two fresh successful samples; reuse its saved
+   identity instead of creating duplicates. Monitor `schedule-status` and the actual last success.
+5. GitHub Actions `publish-playtime` -> `Run workflow` publishes the current Vercel public JSON.
+   This never logs in, samples VRChat or recreates the retired GitHub checkpoint archive.
+6. Verify an actual `schedule` run and the Pages `updated` timestamp before claiming automatic
+   publication works. A successful manual publication is not evidence of a working cron schedule.
 
-`action=publish` only rebuilds a report from saved totals. In the GitHub workflow, `sample` does
-one fresh login, sample and logout. `resume` permits a manual recovery attempt, not a retry loop.
-Without `VRC_AUTH_PER_RUN=true`, the old cookie-only mode remains available for a stable host.
+Unity retains `https://korichneviykakiish.github.io/5ul-calendar-feed/playtime.json`.
+Do not enable the old Actions `PLAYTIME_ENABLED` variable: it is no longer used for sampling.
 
-On a rejected login, additional email confirmation, invalid secrets, or failed session cleanup,
-automatic logins stop pending manual recovery. On 429 it stores a
+On a rejected login, additional email confirmation or invalid secrets, sampling pauses
+pending manual recovery. On 429 it stores a
 cooldown of at least one hour, increasing up to a day, and respects a longer server Retry-After.
-The cooldown is checked before sending a password or TOTP. A rate-limited sample does not even
-send a logout request afterwards. This is our backoff policy, not a promise about when VRChat
+The cooldown is checked before sending a password or TOTP. This is our backoff policy, not a promise about when VRChat
 lifts a restriction. No IP switching to bypass a rejection.
 Old totals remain intact during errors. The report's `updated` is the last complete sample, not
 the last attempted run. `status` exposes staleness to monitoring without publishing credentials.

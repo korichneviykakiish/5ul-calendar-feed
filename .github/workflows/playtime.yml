@@ -4,26 +4,20 @@ on:
   schedule:
     - cron: '2-57/5 * * * *'
   workflow_dispatch:
-    inputs:
-      action:
-        description: 'publish: report only; resume: retry login manually; sample: login with TOTP and count'
-        type: choice
-        default: publish
-        options: [publish, resume, sample]
 
 permissions:
   contents: read
 
-# Share the publisher lock with the calendar. Neither job can overwrite the other's feed.
+# Publication only: all VRChat sampling stays on Vercel.
 concurrency:
   group: calendar-feed
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || vars.PLAYTIME_ENABLED == 'true'
+    if: github.repository == 'korichneviykakiish/5ul-calendar-feed'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     permissions:
       contents: write
       pages: write
@@ -38,34 +32,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
-      - name: Verify accounting and API safety
-        run: python -m unittest discover -s playtime -p 'test_*.py' -v
-      - name: Update encrypted checkpoint and report
-        id: counter
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VRC_USERNAME: ${{ secrets.VRC_USERNAME }}
-          VRC_PASSWORD: ${{ secrets.VRC_PASSWORD }}
-          VRC_TOTP_SECRET: ${{ secrets.VRC_TOTP_SECRET }}
-          VRC_CONTACT: ${{ secrets.VRC_CONTACT }}
-          VRC_SESSION_KEY: ${{ secrets.VRC_SESSION_KEY }}
-          VRC_AUTH_PER_RUN: 'true'
-          PLAYTIME_ACTION: ${{ inputs.action || 'sample' }}
-        run: python -m playtime.run --action "$PLAYTIME_ACTION"
+      - name: Validate publication rules without VRChat access
+        run: python -m unittest playtime.test_publish -v
+      - name: Fetch only the public Vercel report
+        run: python -m playtime.publish
       - name: Save public report
         run: |
           if [ -n "$(git status --porcelain docs/playtime.json)" ]; then
-            git config user.name 'playtime-report-bot'
+            git config user.name 'vercel-report-publisher'
             git config user.email 'actions@users.noreply.github.com'
             git add docs/playtime.json
-            git commit -m 'chore: publish playtime report'
+            git commit -m 'chore: publish public report from Vercel'
             git push origin HEAD:main
           fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
-      - name: Publish static reports
+      - name: Publish trusted static report for VRChat
         id: deployment
         uses: actions/deploy-pages@v5
