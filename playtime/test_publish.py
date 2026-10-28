@@ -2,9 +2,10 @@ import copy
 import json
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import Mock, patch
 
-from playtime.publish import MAX_BYTES, NoRedirects, fetch_report, validated_report
+from playtime.publish import MAX_BYTES, NoRedirects, fetch_report, validated_report, publish_calendar, CALENDAR_SOURCE
 
 
 class PublicReportTests(unittest.TestCase):
@@ -80,6 +81,7 @@ class PublicationWorkflowTests(unittest.TestCase):
         for forbidden in ("secrets.", "VRC_", "playtime.run", "inputs:", "PLAYTIME_ENABLED"):
             self.assertNotIn(forbidden, workflow)
         self.assertFalse((root / ".github/workflows/playtime.yml").exists())
+        self.assertIn("git add docs/playtime.json docs/events.json", workflow)
 
     def test_pages_retries_only_failed_deployment_once_with_bounded_waits(self):
         workflow = self.workflow()
@@ -103,6 +105,41 @@ class PublicationWorkflowTests(unittest.TestCase):
         self.assertIn("PRIMARY_OUTCOME: ${{ steps.deployment.outcome }}", workflow)
         self.assertIn("RETRY_OUTCOME: ${{ steps.deployment_retry.outcome }}", workflow)
         self.assertIn("url: ${{ steps.deployment_retry.outputs.page_url || steps.deployment.outputs.page_url }}", workflow)
+
+
+class PublicCalendarPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "events.json"
+        self.report = {"gen": 1793178000, "groups": [{"id": "grp_56fe79fc-ca06-4b67-858b-e4ec572afe5f",
+                                                    "name": "Public", "events": []}]}
+        self.path.write_text(json.dumps(self.report), encoding="utf-8")
+
+    @patch("playtime.publish.fetch_json")
+    def test_valid_calendar_uses_public_url_and_strips_extra_fields(self, fetch):
+        fetch.return_value = {**self.report, "gen": self.report["gen"] + 60, "cookies": "PRIVATE"}
+        self.assertTrue(publish_calendar(self.path))
+        fetch.assert_called_once_with(CALENDAR_SOURCE)
+        self.assertNotIn("PRIVATE", self.path.read_text())
+
+    @patch("playtime.publish.fetch_json")
+    def test_network_error_or_incomplete_cycle_preserves_previous_file(self, fetch):
+        original = self.path.read_bytes()
+        for result in (None, {"status": "calendar_not_ready"}):
+            fetch.return_value = result
+            self.assertFalse(publish_calendar(self.path))
+            self.assertEqual(self.path.read_bytes(), original)
+        fetch.side_effect = OSError("network")
+        self.assertFalse(publish_calendar(self.path))
+        self.assertEqual(self.path.read_bytes(), original)
+
+    @patch("playtime.publish.fetch_json")
+    def test_stale_backend_cannot_replace_newer_published_calendar(self, fetch):
+        original = self.path.read_bytes()
+        fetch.return_value = {**self.report, "gen": self.report["gen"] - 1}
+        self.assertFalse(publish_calendar(self.path))
+        self.assertEqual(self.path.read_bytes(), original)
 
 
 if __name__ == "__main__":

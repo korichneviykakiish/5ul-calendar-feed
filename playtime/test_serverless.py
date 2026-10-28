@@ -13,7 +13,7 @@ from playtime.serverless import handle, initialize_empty, public_report, tick, c
 from playtime.serverless_store import RedisStore, LEASE_SECONDS, RELEASE, SAVE, FORGET, UnsupportedCommand
 from playtime.vrchat import ApiFailure, Client
 
-CONFIG = {**configuration(), "world_id": "wrld_test"}
+CONFIG = {**configuration(), "world_id": "wrld_test", "calendar_enabled": False}
 FRIEND = {"id": "usr_one", "displayName": "One", "location": "wrld_test:private-instance"}
 CRON = "c" * 40
 ADMIN = "a" * 40

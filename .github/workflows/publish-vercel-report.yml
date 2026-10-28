@@ -32,14 +32,14 @@ jobs:
           python-version: '3.12'
       - name: Validate publication rules without VRChat access
         run: python -m unittest playtime.test_publish -v
-      - name: Fetch only the public Vercel report
+      - name: Fetch public counter and calendar reports from Vercel
         run: python -m playtime.publish
       - name: Save public report
         run: |
-          if [ -n "$(git status --porcelain docs/playtime.json)" ]; then
+          if [ -n "$(git status --porcelain docs/playtime.json docs/events.json)" ]; then
             git config user.name 'vercel-report-publisher'
             git config user.email 'actions@users.noreply.github.com'
-            git add docs/playtime.json
+            git add docs/playtime.json docs/events.json
             git commit -m 'chore: publish public report from Vercel'
             git push origin HEAD:main
           fi

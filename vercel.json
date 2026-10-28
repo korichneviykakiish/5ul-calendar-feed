@@ -6,9 +6,14 @@
     "api/playtime.py": {
       "maxDuration": 300,
       "excludeFiles": "{.git/**,.venv/**,state/**,**/test_*.py}"
+    },
+    "api/events.py": {
+      "maxDuration": 30,
+      "excludeFiles": "{.git/**,.venv/**,state/**,**/test_*.py}"
     }
   },
   "rewrites": [
-    { "source": "/playtime.json", "destination": "/api/playtime" }
+    { "source": "/playtime.json", "destination": "/api/playtime" },
+    { "source": "/events.json", "destination": "/api/events" }
   ]
 }

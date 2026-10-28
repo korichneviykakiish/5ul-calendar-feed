@@ -182,7 +182,38 @@ against the provider's current plan. No paid plan is enabled automatically.
    `publish-vercel-report.yml` provides that bridge for the existing Pages URL:
    it copies only the public sanitized JSON, without credentials or API sampling,
    once per minute through the external task. GitHub execution/deployment delays affect display
-   freshness, not the counter's one-minute operation. Calendar remains unchanged.
+   freshness, not the counter's one-minute operation.
+
+### Calendar on the same session
+
+`calendar_enabled` in `playtime/config.json` enables the calendar after a successful
+minute sample. It uses the same HTTP client and fenced encrypted checkpoint, never
+a second login or a separate GitHub runner session. Hours and incoming friend
+requests retain priority. At most two additional calendar page reads fit within
+the existing 18-second work budget; unfinished work continues in a later minute.
+
+The group allowlist stays in `groups.json`. A cycle starts every 30 minutes and
+covers every month intersecting the three-hour grace / 35-day horizon, with bounded
+pagination. The first full cycle typically takes 9-14 successful minutes for nine
+groups. Long API responses or many pages can delay completion. There is no extra
+cron job. Only complete cycles replace the public feed. Removed groups preserve
+their last known public events, mark private diagnostics `partial`, and cannot
+advance the feed timestamp. Cancelled events disappear on a complete empty result.
+
+`/events.json` is a read-only sanitized public report; `calendar-status` is an
+admin-only progress diagnostic. Group-only events, drafts, deleted events, private
+fields and markup are excluded. GitHub's existing minute publisher copies both
+reports to the existing trusted Pages URLs. Calendar fetch failures retain the old
+file without stopping publication of playtime. No new world upload is required
+when its CalendarConfig already uses this repository's `events.json`.
+
+API 401/403/429 stops further work and uses the existing hard-stop/rate-limit policy;
+calendar rejection cannot authorize password recovery. Network/schema errors only
+pause calendar work for five minutes and leave the successfully sampled hours intact.
+Collection adds no checkpoint writes to the normal two-save tick. Reading the public
+calendar adds at most one Redis read per publisher invocation (about 43,200/month),
+so the combined baseline approaches 475,200 commands/30 days, before other usage.
+Monitor the storage quota; no paid plan is enabled by this change.
 
 The retired world's hours were not imported. The old GitHub sampling workflow
 has been replaced with public-report publication only: enabling it cannot create

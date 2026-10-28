@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 import re
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from .calendar import validated_report as validated_calendar
 
 SOURCE = "https://5ul-calendar-feed.vercel.app/playtime.json"
+CALENDAR_SOURCE = "https://5ul-calendar-feed.vercel.app/events.json"
 MAX_BYTES = 256 * 1024
 STATUSES = {"ok", "stale", "sampling", "waiting_for_login", "login_required", "access_denied",
             "configuration_error", "logout_failed", "rate_limited", "api_error", "network_error",
@@ -37,15 +39,34 @@ def validated_report(value):
     return {"updated": updated, "status": value["status"], "estimated": True, "top": safe}
 
 
-def fetch_report():
-    request = Request(SOURCE, headers={"User-Agent": "FiveUlPublicReportPublisher/1.0"})
+def fetch_json(url):
+    request = Request(url, headers={"User-Agent": "FiveUlPublicReportPublisher/1.0"})
     with build_opener(NoRedirects()).open(request, timeout=20) as response:
         if response.status != 200:
             raise RuntimeError("Public report unavailable")
         payload = response.read(MAX_BYTES + 1)
     if len(payload) > MAX_BYTES:
         raise ValueError("Public report exceeds size limit")
-    return validated_report(json.loads(payload))
+    return json.loads(payload)
+
+
+def fetch_report():
+    return validated_report(fetch_json(SOURCE))
+
+
+def publish_calendar(destination):
+    try:
+        report = validated_calendar(fetch_json(CALENDAR_SOURCE))
+        if destination.exists():
+            previous = json.loads(destination.read_text(encoding="utf-8"))
+            if type(previous.get("gen")) is int and previous["gen"] > report["gen"]:
+                raise ValueError("Older calendar snapshot")
+    except Exception as error:
+        print("[publish] Calendar retained: " + type(error).__name__)
+        return False
+    destination.write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    print("[publish] Calendar generated=" + str(report["gen"]))
+    return True
 
 
 def main():
@@ -53,6 +74,7 @@ def main():
     destination = Path("docs/playtime.json")
     destination.parent.mkdir(exist_ok=True)
     destination.write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    publish_calendar(Path("docs/events.json"))
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             summary.write("## Vercel public report\n\nCounter status: **" + report["status"]

@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from .auth import login_client
+from .calendar import advance as advance_calendar, status as calendar_status, validated_report as calendar_report
 from .model import interrupt, leaderboard, new_state
 from .run import process
 from .serverless_store import RedisStore
@@ -121,6 +122,9 @@ def tick(store, config, contact, resume=False, now=None):
             client.deadline = time.monotonic() + WORK_SECONDS
             # Local monotonic sequence, independent of Actions run numbers.
             state, _ = process(state, client, config, state["last_run"] + 1, now=now)
+            if state["status"] == "ok" and config.get("calendar_enabled") is True:
+                state = advance_calendar(state, client, int(time.time()))
+                state["cookies"] = client.cookies()
         except ApiFailure as error:
             state = interrupt(state, error.status, int(time.time()), error.retry_after)
             if login_requested:
@@ -143,7 +147,7 @@ def handle(method, authorization="", action="sample"):
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
         if action not in {"sample", "resume", "initialize", "schedule", "schedule-status", "schedule-rearm", "forget-previous-world",
-                          "publication-schedule", "publication-status", "storage-status", "recovery-status"}:
+                          "publication-schedule", "publication-status", "storage-status", "recovery-status", "calendar-status"}:
             return 400, {"status": "invalid_action"}
         admin_action = action != "sample"
         secret_name = "PLAYTIME_ADMIN_SECRET" if admin_action else "CRON_SECRET"
@@ -154,14 +158,18 @@ def handle(method, authorization="", action="sample"):
             return 401, {"status": "unauthorized"}
         if (os.environ.get("VERCEL_ENV") != "production"
                 or (action not in {"initialize", "schedule-status", "forget-previous-world",
-                                   "publication-schedule", "publication-status", "storage-status", "recovery-status"}
+                                   "publication-schedule", "publication-status", "storage-status", "recovery-status", "calendar-status"}
                     and os.environ.get("PLAYTIME_ENABLED") != "true")):
             return 503, {"status": "disabled"}
     try:
         config = configuration()
         store = configured_store(config)
         if method == "GET":
-            return 200, public_report(store.load(), config, int(time.time()))
+            state = store.load()
+            if action == "calendar":
+                report = state.get("calendar", {}).get("report")
+                return (200, calendar_report(report)) if report else (503, {"status": "calendar_not_ready"})
+            return 200, public_report(state, config, int(time.time()))
         if action == "initialize":
             store.initialize(new_state(os.environ["VRC_USERNAME"], config["world_id"]))
             return 200, {"status": "initialized", "sampled": False, "poll_seconds": POLL_SECONDS}
@@ -184,6 +192,8 @@ def handle(method, authorization="", action="sample"):
             return 200, {"status": "storage_capability", "native_conditional_release": store.native_release_supported()}
         if action == "recovery-status":
             return 200, {"status": "recovery_policy", **recovery_status(store.load(), config)}
+        if action == "calendar-status":
+            return 200, {"status": "calendar_state", **calendar_status(store.load())}
         result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume")
         # A policy wait must keep its clock alive, without claiming a successful sample.
         healthy = {"ok", "busy", "already_checked"}
