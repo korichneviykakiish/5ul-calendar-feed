@@ -228,3 +228,11 @@ storage, pre-request checkpoints, bounded automatic recovery, authentication iso
 rate-limit delays, request budgets, public data hygiene and preview safety.
 Live Redis scripting, deployment, credentials, scheduler and VRChat access still need
 real checks; local tests alone cannot confirm any of those external services.
+
+## Manual reset
+
+Open `/admin.html` on the Vercel production host. Enter PLAYTIME_ADMIN_SECRET
+(the administrator token, not CRON_SECRET), type яапня and confirm. The token is
+not stored by the page. POST reset-confirmed clears only players, last_sample and
+last_success under the fenced lease. Session, calendar and scheduler are preserved.
+Busy returns 409; retry later. The existing publisher updates the world afterward.

@@ -146,7 +146,7 @@ def handle(method, authorization="", action="sample"):
     if method not in {"GET", "POST"}:
         return 405, {"status": "method_not_allowed"}
     if method == "POST":
-        if action not in {"sample", "resume", "initialize", "schedule", "schedule-status", "schedule-rearm", "forget-previous-world",
+        if action not in {"reset-confirmed", "sample", "resume", "initialize", "schedule", "schedule-status", "schedule-rearm", "forget-previous-world",
                           "publication-schedule", "publication-status", "storage-status", "recovery-status", "calendar-status"}:
             return 400, {"status": "invalid_action"}
         admin_action = action != "sample"
@@ -157,7 +157,7 @@ def handle(method, authorization="", action="sample"):
         if not authorized(authorization, secret):
             return 401, {"status": "unauthorized"}
         if (os.environ.get("VERCEL_ENV") != "production"
-                or (action not in {"initialize", "schedule-status", "forget-previous-world",
+                or (action not in {"reset-confirmed", "initialize", "schedule-status", "forget-previous-world",
                                    "publication-schedule", "publication-status", "storage-status", "recovery-status", "calendar-status"}
                     and os.environ.get("PLAYTIME_ENABLED") != "true")):
             return 503, {"status": "disabled"}
@@ -170,6 +170,8 @@ def handle(method, authorization="", action="sample"):
                 report = state.get("calendar", {}).get("report")
                 return (200, calendar_report(report)) if report else (503, {"status": "calendar_not_ready"})
             return 200, public_report(state, config, int(time.time()))
+        if action == "reset-confirmed":
+            return reset_counter(store)
         if action == "initialize":
             store.initialize(new_state(os.environ["VRC_USERNAME"], config["world_id"]))
             return 200, {"status": "initialized", "sampled": False, "poll_seconds": POLL_SECONDS}
@@ -221,3 +223,18 @@ if __name__ == "__main__":
     except Exception as error:
         print("[playtime] Initialization stopped safely: " + type(error).__name__)
         raise SystemExit(1) from None
+
+
+def reset_counter(store):
+    """Operator-only reset under the same fenced lease as sampling."""
+    if not store.acquire():
+        return 409, {"status": "busy"}
+    try:
+        state = store.load()
+        state["players"] = {}
+        state["last_sample"] = None
+        state["last_success"] = None
+        store.save(state)
+        return 200, {"status": "reset", "sampled": False}
+    finally:
+        store.release()
