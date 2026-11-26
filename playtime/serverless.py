@@ -10,7 +10,9 @@ from pathlib import Path
 
 from .auth import login_client
 from .calendar import advance as advance_calendar, status as calendar_status, validated_report as calendar_report
+from .d1_store import D1Store, MissingCheckpoint
 from .model import interrupt, leaderboard, new_state
+from .public_snapshot import recovered_state
 from .run import process
 from .serverless_store import RedisStore
 from .vrchat import ApiFailure, Client
@@ -32,6 +34,11 @@ def configuration():
 
 
 def configured_store(config):
+    d1 = tuple(os.environ.get(name, "") for name in (
+        "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_DATABASE_ID", "CLOUDFLARE_D1_API_TOKEN",
+    ))
+    if any(d1):
+        return D1Store(*d1, os.environ["VRC_SESSION_KEY"], os.environ["VRC_USERNAME"], config["world_id"])
     url = os.environ.get("UPSTASH_REDIS_REST_URL", "")
     token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
     if not url and not token:
@@ -71,7 +78,7 @@ def recovery_status(state, config):
             "next_login_allowed": max(state["retry_at"], previous + AUTO_LOGIN_COOLDOWN if previous is not None else 0)}
 
 
-def tick(store, config, contact, resume=False, now=None):
+def tick(store, config, contact, resume=False, now=None, allow_recovery_login=False):
     now = int(time.time()) if now is None else now
     bucket = now // POLL_SECONDS
     if not store.acquire():
@@ -82,6 +89,7 @@ def tick(store, config, contact, resume=False, now=None):
             return {"status": state["status"], "sampled": False, "retry_at": state["retry_at"]}
         if bucket <= state.get("last_tick", 0):
             return {"status": "already_checked", "sampled": False}
+        resume = resume or (allow_recovery_login and state.get("initial_login_pending") is True)
         automatic = False
         if not resume and (state["status"] in BLOCKED or not state["cookies"].get("auth")):
             policy = recovery_status(state, config)
@@ -103,6 +111,7 @@ def tick(store, config, contact, resume=False, now=None):
             # The durable latch makes a timeout/crash require manual recovery, not another login.
             attempt.update(auto_login_blocked=True, last_login_attempt_at=now,
                            last_login_method="automatic" if automatic else "manual")
+            attempt.pop("initial_login_pending", None)
             if automatic:
                 attempt["auto_login_attempts"] = attempt.get("auto_login_attempts", 0) + 1
         store.save(attempt)
@@ -130,6 +139,7 @@ def tick(store, config, contact, resume=False, now=None):
             if login_requested:
                 state["cookies"] = {}
         if login_requested:
+            state.pop("initial_login_pending", None)
             state["session_recovery_pending"] = False
             state["auto_login_blocked"] = state["status"] != "ok"
             if state["status"] in BLOCKED or state["status"] == "rate_limited":
@@ -139,6 +149,17 @@ def tick(store, config, contact, resume=False, now=None):
                 "last_success": state["last_success"], "poll_seconds": POLL_SECONDS}
     finally:
         store.release()
+
+
+def prepare_public_recovery(store, config, action):
+    enabled = (isinstance(store, D1Store) and config["world_id"] == REQUESTED_WORLD_ID
+               and action == "sample" and os.environ.get("PLAYTIME_D1_RESTORE_SNAPSHOT") == "true")
+    if enabled:
+        try:
+            store.load()
+        except MissingCheckpoint:
+            store.initialize(recovered_state(store.account, store.world_id), if_missing=True)
+    return enabled
 
 
 def handle(method, authorization="", action="sample"):
@@ -196,7 +217,9 @@ def handle(method, authorization="", action="sample"):
             return 200, {"status": "recovery_policy", **recovery_status(store.load(), config)}
         if action == "calendar-status":
             return 200, {"status": "calendar_state", **calendar_status(store.load())}
-        result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume")
+        allow_recovery_login = prepare_public_recovery(store, config, action)
+        result = tick(store, config, os.environ["VRC_CONTACT"], resume=action == "resume",
+                      allow_recovery_login=allow_recovery_login)
         # A policy wait must keep its clock alive, without claiming a successful sample.
         healthy = {"ok", "busy", "already_checked"}
         waiting = (action == "sample" and result["status"] == "login_required"

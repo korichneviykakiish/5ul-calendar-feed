@@ -2,7 +2,11 @@
 
 import copy
 import re
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
+
+
+IMPORTED_PLAYER_PREFIX = "imported:"
 
 
 def new_state(account, world_id):
@@ -76,6 +80,7 @@ def apply_sample(state, friends, sampled_at, run_number, max_gap):
         inside = isinstance(location, str) and location.split(":", 1)[0] == state["world_id"]
         # Never persist locations outside our world, or private instance identifiers.
         current[uid] = (name, inside)
+    attach_imported_players(result["players"], current)
     for uid, row in result["players"].items():
         if uid not in current:
             row["present"] = False
@@ -92,6 +97,23 @@ def apply_sample(state, friends, sampled_at, run_number, max_gap):
     result.update(last_run=run_number, last_sample=sampled_at, last_success=sampled_at,
                   status="ok", retry_at=0, rate_limits=0)
     return result
+
+
+def attach_imported_players(players, current):
+    imported = defaultdict(list)
+    for uid, row in players.items():
+        if uid.startswith(IMPORTED_PLAYER_PREFIX):
+            imported[row["name"]].append(uid)
+    if not imported:
+        return
+    observed_names = Counter(name for name, _ in current.values())
+    for uid, (name, _) in current.items():
+        candidates = imported.get(name, [])
+        if name == "Player" or len(candidates) != 1 or observed_names[name] != 1:
+            continue
+        imported_row = players.pop(candidates[0])
+        player = players.setdefault(uid, {"name": name, "seconds": 0, "present": False})
+        player["seconds"] += imported_row["seconds"]
 
 
 def interrupt(state, status, now, retry_after=0):
