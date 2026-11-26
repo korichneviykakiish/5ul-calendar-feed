@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from playtime.model import apply_sample, new_state, validate_state
-from playtime.serverless import AUTO_LOGIN_COOLDOWN, handle, public_report, recovery_status, tick
+from playtime.serverless import AUTO_LOGIN_COOLDOWN, handle, public_report, recovery_status, reset_counter, tick
 from playtime.test_serverless import ADMIN, CRON, ENV, CONFIG, FRIEND, MemoryStore
 from playtime.vrchat import ApiFailure, Client
 
@@ -107,6 +107,56 @@ class AutomaticRecoveryTests(unittest.TestCase):
         self.assertEqual(self.tick(1380)["status"], "ok")
         self.login.assert_called_once()
         self.assertEqual(self.store.state["players"]["usr_one"]["seconds"], 660)
+
+    def test_reset_while_recovery_pending_preserves_one_bounded_login(self):
+        self.reject()
+        before = copy.deepcopy(self.store.state)
+        reset_counter(self.store)
+        for key in ("last_success", "session_recovery_pending", "retry_at", "last_tick", "cookies"):
+            self.assertEqual(self.store.state[key], before[key])
+        self.assertTrue(self.tick(1320)["sampled"])
+        self.login.assert_called_once_with(2.0, persist=False)
+        self.assertEqual(self.store.state["players"]["usr_one"]["seconds"], 0)
+        self.tick(1380)
+        self.assertEqual(self.store.state["players"]["usr_one"]["seconds"], 60)
+        self.login.assert_called_once()
+
+    def test_reset_healthy_counter_allows_later_verified_rejection_recovery(self):
+        reset_counter(self.store)
+        self.reject()
+        self.assertTrue(self.store.state["session_recovery_pending"])
+        self.login.assert_not_called()
+        self.assertTrue(self.tick(1320)["sampled"])
+        self.login.assert_called_once()
+        self.assertEqual(self.store.state["players"]["usr_one"]["seconds"], 0)
+
+    def test_reset_does_not_clear_failed_login_hard_stop(self):
+        self.reject()
+        self.login.side_effect = ApiFailure("access_denied")
+        self.tick(1320)
+        before = copy.deepcopy(self.store.state)
+        reset_counter(self.store)
+        for key in ("status", "auto_login_blocked", "last_login_attempt_at", "last_login_method",
+                    "auto_login_attempts", "session_recovery_pending", "retry_at", "cookies"):
+            self.assertEqual(self.store.state[key], before[key])
+        self.login.reset_mock()
+        self.login.side_effect = None
+        self.tick(100000)
+        self.login.assert_not_called()
+        self.assertTrue(self.store.state["auto_login_blocked"])
+
+    def test_reset_preserves_pending_recovery_cooldown(self):
+        self.tick(1260, resume=True)
+        self.reject(1320)
+        reset_counter(self.store)
+        self.login.reset_mock()
+        result = self.tick(1380)
+        self.assertTrue(result["recovery_waiting"])
+        self.assertEqual(result["retry_at"], 1260 + AUTO_LOGIN_COOLDOWN)
+        self.login.assert_not_called()
+        self.tick(1260 + AUTO_LOGIN_COOLDOWN)
+        self.login.assert_called_once()
+        self.assertEqual(self.store.state["players"]["usr_one"]["seconds"], 0)
 
     def test_automatic_attempt_is_persisted_before_credentials_are_used(self):
         self.reject()

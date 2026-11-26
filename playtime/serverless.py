@@ -131,7 +131,8 @@ def tick(store, config, contact, resume=False, now=None, allow_recovery_login=Fa
             client.deadline = time.monotonic() + WORK_SECONDS
             # Local monotonic sequence, independent of Actions run numbers.
             state, _ = process(state, client, config, state["last_run"] + 1, now=now)
-            if state["status"] == "ok" and config.get("calendar_enabled") is True:
+            if (state["status"] == "ok" and config.get("calendar_enabled") is True
+                    and state.get("friend_request_status") != "session_verification_pending"):
                 state = advance_calendar(state, client, int(time.time()))
                 state["cookies"] = client.cookies()
         except ApiFailure as error:
@@ -175,6 +176,8 @@ def handle(method, authorization="", action="sample"):
         secret = os.environ.get(secret_name, "")
         if admin_action and secret == os.environ.get("CRON_SECRET", ""):
             return 503, {"status": "separate_admin_secret_required"}
+        if admin_action and (len(secret) < 32 or not secret.isascii()):
+            return 503, {"status": "admin_secret_invalid_format"}
         if not authorized(authorization, secret):
             return 401, {"status": "unauthorized"}
         if (os.environ.get("VERCEL_ENV") != "production"
@@ -256,7 +259,7 @@ def reset_counter(store):
         state = store.load()
         state["players"] = {}
         state["last_sample"] = None
-        state["last_success"] = None
+        # Reset continuity while retaining the last verified sample for session recovery.
         store.save(state)
         return 200, {"status": "reset", "sampled": False}
     finally:

@@ -83,8 +83,8 @@ class Client:
             reason = auth_reason(response)
             rejected = (operation == "verify-session" and reason in {"missing-credentials", "unauthorized"}
                         and flags.get("auth_cookie_count") == 1 and flags.get("basic_header_sent") is False)
-            raise ApiFailure("login_required", operation=operation, http_status=401, reason=reason,
-                             session_rejected=rejected)
+            raise ApiFailure("login_required", retry_after=retry_delay(response.headers.get("Retry-After", "")),
+                             operation=operation, http_status=401, reason=reason, session_rejected=rejected)
         if response.status_code == 403:
             raise ApiFailure("access_denied", operation=operation, http_status=403, reason=auth_reason(response))
         if response.status_code != 200:
@@ -138,11 +138,18 @@ class Client:
         seen = set()
         scanned = 0
         scan_capped = False
+        budget_exhausted = False
         # The API's type filter is deprecated. Collect before accepting so our
         # own removals cannot shift the offsets of unread notification pages.
         for page in range(5):
-            rows = self.call("GET", "/auth/user/notifications",
-                             {"hidden": "false", "n": 100, "offset": page * 100}, operation="list-requests")
+            try:
+                rows = self.call("GET", "/auth/user/notifications",
+                                 {"hidden": "false", "n": 100, "offset": page * 100}, operation="list-requests")
+            except ApiFailure as failure:
+                if failure.status != "time_budget":
+                    raise
+                budget_exhausted = True
+                break
             if not isinstance(rows, list) or len(rows) > 100:
                 raise ApiFailure("invalid_response", operation="list-requests")
             scanned += len(rows)
@@ -168,9 +175,14 @@ class Client:
         accepted = 0
         expired = 0
         for notification in pending:
+            if budget_exhausted:
+                break
             try:
                 self.call("PUT", "/auth/user/notifications/" + notification + "/accept", operation="accept-request")
             except ApiFailure as failure:
+                if failure.status == "time_budget":
+                    budget_exhausted = True
+                    break
                 if failure.status == "api_error" and failure.http_status == 404:
                     expired += 1
                     continue
@@ -179,6 +191,7 @@ class Client:
         print("[playtime] Friend request scan: " + json.dumps({
             "scanned": scanned, "pending": len(pending), "accepted": accepted,
             "expired": expired, "scan_capped": scan_capped,
+            "budget_exhausted": budget_exhausted, "deferred_known": len(pending) - accepted - expired,
         }))
         return accepted
 

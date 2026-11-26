@@ -8,6 +8,9 @@ from .publish import fetch_json, validated_report
 
 SOURCE_COMMIT = "525a7d9496aa10c35099a6d292377e532910f0cd"
 SOURCE = f"https://raw.githubusercontent.com/korichneviykakiish/5ul-calendar-feed/{SOURCE_COMMIT}/docs"
+# These existing jobs were verified against their respective 5ul endpoints before recovery.
+SCHEDULER_JOB_ID = 8734098
+PUBLICATION_JOB_ID = 8734939
 
 
 def recovered_state(account, world_id):
@@ -25,5 +28,7 @@ def recovered_state(account, world_id):
     state["last_success"] = int(datetime.strptime(report["updated"], "%Y-%m-%d %H:%M UTC")
                                 .replace(tzinfo=timezone.utc).timestamp())
     state["calendar"] = {"report": calendar}
+    state["scheduler_job_id"] = SCHEDULER_JOB_ID
+    state["publication_job_id"] = PUBLICATION_JOB_ID
     state["initial_login_pending"] = True
     return state

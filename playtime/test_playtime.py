@@ -8,7 +8,7 @@ import requests
 from cryptography.fernet import Fernet
 
 from playtime.model import apply_sample, interrupt, leaderboard, new_state, validate_state
-from playtime.run import process
+from playtime.run import process, process_with_login
 from playtime.storage import Store, retained_assets
 from playtime.vrchat import ApiFailure, Client, retry_delay
 from session_state import user_agent
@@ -225,6 +225,20 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(failure.exception.reason, "unclassified")
                 self.assertNotIn("private-server-text", str(vars(failure.exception)))
 
+    def test_401_preserves_server_retry_after_without_inventing_a_default(self):
+        for headers, expected in (({}, 0), ({"Retry-After": "invalid"}, 0),
+                                  ({"Retry-After": "0"}, 0), ({"Retry-After": "120"}, 120)):
+            with self.subTest(headers=headers):
+                self.session.request.reset_mock()
+                self.session.request.return_value = response(
+                    {"error": {"message": "Unauthorized"}}, 401, headers)
+                with self.assertRaises(ApiFailure) as failed:
+                    self.client.call("GET", "/auth/user/notifications", operation="list-requests")
+                self.assertEqual(failed.exception.status, "login_required")
+                self.assertEqual(failed.exception.reason, "unauthorized")
+                self.assertEqual(failed.exception.retry_after, expected)
+                self.session.request.assert_called_once()
+
     def test_known_auth_reason_is_classified(self):
         self.session.request.return_value = response({"error": {"message": '"Missing Credentials"'}}, 401)
         with self.assertRaises(ApiFailure) as failure:
@@ -362,6 +376,57 @@ class ApiTests(unittest.TestCase):
                     self.client.accept_requests(20)
                 self.assertTrue(all(call.args[0] == "GET" for call in self.session.request.call_args_list))
 
+    def test_deadline_defers_remaining_requests_and_next_tick_accepts_them(self):
+        clock = [0.0]
+        pending = ["frq_" + str(i) for i in range(10)]
+        accepted_ids = []
+
+        def respond(method, url, **kwargs):
+            if url.endswith("/auth/user"):
+                return response({"id": "usr_bot"})
+            if url.endswith("/friends"):
+                return response([])
+            if url.endswith("/notifications"):
+                return response([{"type": "friendRequest", "id": uid} for uid in pending])
+            self.assertEqual(method, "PUT")
+            uid = url.split("/")[-2]
+            pending.remove(uid)
+            accepted_ids.append(uid)
+            return response({"success": {}})
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        self.session.request.side_effect = respond
+        with patch("playtime.vrchat.time.monotonic", side_effect=lambda: clock[0]):
+            client = Client({}, "test", session=self.session, sleep=sleep, deadline=18)
+            client.verify()
+            client.friends(100, 120)
+            with patch("playtime.vrchat.print") as output:
+                self.assertEqual(client.accept_requests(20), 6)
+            diagnostic = json.loads(output.call_args.args[0].removeprefix("[playtime] Friend request scan: "))
+            self.assertTrue(diagnostic["budget_exhausted"])
+            self.assertEqual(diagnostic["deferred_known"], 4)
+            self.assertEqual(len(pending), 4)
+            clock[0] = 60
+            client = Client({}, "test", session=self.session, sleep=sleep, deadline=78)
+            client.verify()
+            client.friends(100, 120)
+            self.assertEqual(client.accept_requests(20), 4)
+        self.assertEqual(pending, [])
+        self.assertEqual(len(set(accepted_ids)), 10)
+        self.assertTrue(all(call.args[0] in {"GET", "PUT"} for call in self.session.request.call_args_list))
+
+    def test_scan_budget_exhaustion_leaves_partial_queue_untouched(self):
+        rows = [{"type": "invite"}] * 99 + [{"type": "friendRequest", "id": "frq_waiting"}]
+        self.client.call = Mock(side_effect=[rows, ApiFailure("time_budget", operation="list-requests")])
+        with patch("playtime.vrchat.print") as output:
+            self.assertEqual(self.client.accept_requests(20), 0)
+        self.assertTrue(all(call.args[0] == "GET" for call in self.client.call.call_args_list))
+        diagnostic = json.loads(output.call_args.args[0].removeprefix("[playtime] Friend request scan: "))
+        self.assertTrue(diagnostic["budget_exhausted"])
+        self.assertEqual(diagnostic["deferred_known"], 1)
+
     def test_zero_request_limit_makes_no_calls(self):
         self.assertEqual(self.client.accept_requests(0), 0)
         self.session.request.assert_not_called()
@@ -404,6 +469,146 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["players"]["usr_one"]["seconds"], 300)
         self.assertEqual(result["status"], "rate_limited")
         self.assertEqual(result["last_run"], 2)
+
+    def test_optional_queue_failures_do_not_erase_complete_sample_continuity(self):
+        errors = [ApiFailure(status, operation="accept-request") for status in
+                  ("time_budget", "network_error", "invalid_response")]
+        errors += [ApiFailure("api_error", operation="list-requests", http_status=code) for code in (404, 500)]
+        errors += [ValueError("private response contents")]
+        for error in errors:
+            with self.subTest(error=str(error)):
+                self.client.accept_requests.side_effect = error
+                state = copy.deepcopy(self.state)
+                for run, now in ((2, 1060), (3, 1120), (4, 1180)):
+                    with patch("playtime.run.time.time", return_value=now):
+                        state, changed = process(state, self.client, CONFIG, run, now=now)
+                    self.assertTrue(changed)
+                    self.assertEqual(state["status"], "ok")
+                    self.assertEqual(state["last_sample"], now)
+                    self.assertEqual(state["last_success"], now)
+                    self.assertTrue(state["players"]["usr_one"]["present"])
+                    self.assertEqual(state["players"]["usr_one"]["seconds"], now - 1000)
+                self.assertEqual(leaderboard(state)["top"][0]["seconds"], 180)
+
+    def test_known_optional_401_defers_only_to_next_ticks_verified_session_check(self):
+        for reason in ("missing-credentials", "unauthorized"):
+            with self.subTest(reason=reason):
+                self.client.reset_mock()
+                self.client.verify.side_effect = None
+                self.client.accept_requests.side_effect = ApiFailure(
+                    "login_required", operation="accept-request", http_status=401, reason=reason)
+                with patch("playtime.run.time.time", return_value=1060):
+                    state, _ = process(self.state, self.client, CONFIG, 2, now=1060)
+                self.assertEqual(state["status"], "ok")
+                self.assertEqual(state["friend_request_status"], "session_verification_pending")
+                self.assertEqual(state["last_sample"], 1060)
+                self.assertTrue(state["players"]["usr_one"]["present"])
+                self.assertEqual(state["players"]["usr_one"]["seconds"], 60)
+                self.assertFalse(state.get("session_recovery_pending", False))
+                self.assertFalse(state.get("auto_login_blocked", False))
+                self.client.verify.assert_called_once()
+                self.client.accept_requests.assert_called_once()
+                self.client.verify.side_effect = ApiFailure(
+                    "login_required", operation="verify-session", http_status=401,
+                    reason=reason, session_rejected=True)
+                self.client.accept_requests.reset_mock()
+                with patch("playtime.run.time.time", return_value=1120):
+                    rejected, _ = process(state, self.client, CONFIG, 3, now=1120)
+                self.assertEqual(rejected["status"], "login_required")
+                self.assertTrue(rejected["session_recovery_pending"])
+                self.assertFalse(rejected.get("auto_login_blocked", False))
+                self.assertEqual(rejected["players"]["usr_one"]["seconds"], 60)
+                self.client.accept_requests.assert_not_called()
+
+    def test_per_run_login_does_not_logout_or_retry_after_optional_session_401(self):
+        self.client.accept_requests.side_effect = ApiFailure(
+            "login_required", operation="accept-request", http_status=401, reason="unauthorized")
+        with patch("playtime.run.login_client", return_value=self.client) as login, \
+                patch("playtime.run.time.time", return_value=1060):
+            state, _ = process_with_login(self.state, CONFIG, 2, resume=True, now=1060)
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["friend_request_status"], "session_verification_pending")
+        self.assertEqual(state["players"]["usr_one"]["seconds"], 60)
+        login.assert_called_once()
+        self.client.verify.assert_called_once()
+        self.client.accept_requests.assert_called_once()
+        self.client.logout.assert_not_called()
+
+    def test_optional_auth_and_rate_guards_still_hard_stop_without_retry(self):
+        failures = [
+            ApiFailure("login_required", operation="accept-request", http_status=401, reason="unclassified"),
+            ApiFailure("login_required", operation="accept-request", http_status=200, reason="two-factor-required"),
+            ApiFailure("login_required", operation="accept-request", http_status=429,
+                       reason="email-location-verification", retry_after=7200),
+            ApiFailure("login_required", operation="accept-request", http_status=401,
+                       reason="unauthorized", retry_after=7200),
+            ApiFailure("access_denied", operation="accept-request", http_status=403),
+            ApiFailure("rate_limited", operation="accept-request", http_status=429, retry_after=7200),
+        ]
+        for error in failures:
+            with self.subTest(status=error.status, reason=error.reason, code=error.http_status):
+                self.client.reset_mock()
+                self.client.accept_requests.side_effect = error
+                with patch("playtime.run.time.time", return_value=1060):
+                    state, _ = process(self.state, self.client, CONFIG, 2, now=1060)
+                self.assertEqual(state["status"], error.status)
+                self.assertEqual(state["players"]["usr_one"]["seconds"], 60)
+                self.assertIsNone(state["last_sample"])
+                self.assertFalse(state["players"]["usr_one"]["present"])
+                self.assertTrue(state["auto_login_blocked"])
+                self.assertFalse(state["session_recovery_pending"])
+                if error.retry_after:
+                    self.assertGreaterEqual(state["retry_at"], 1060 + error.retry_after)
+                self.client.verify.assert_called_once()
+                self.client.accept_requests.assert_called_once()
+
+    def test_optional_http_401_with_retry_after_keeps_credit_and_hard_stops(self):
+        session = requests.Session()
+        session.request = Mock(side_effect=[
+            response({"id": "usr_bot"}), response([friend()]),
+            response({"error": {"message": "Unauthorized"}}, 401, {"Retry-After": "120"}),
+        ])
+        client = Client({"auth": "SYNTHETIC"}, "test@example.org", session=session, sleep=Mock())
+        with patch("playtime.run.time.time", return_value=1060), patch("playtime.vrchat.print"):
+            state, changed = process(self.state, client, CONFIG, 2, now=1060)
+        self.assertTrue(changed)
+        self.assertEqual(state["status"], "login_required")
+        self.assertEqual(state["players"]["usr_one"]["seconds"], 60)
+        self.assertIsNone(state["last_sample"])
+        self.assertFalse(state["players"]["usr_one"]["present"])
+        self.assertTrue(state["auto_login_blocked"])
+        self.assertFalse(state["session_recovery_pending"])
+        self.assertNotEqual(state["friend_request_status"], "session_verification_pending")
+        self.assertEqual(state["retry_at"], 1180)
+        self.assertEqual(session.request.call_count, 3)
+        waiting, changed = process(state, client, CONFIG, 3, now=1120)
+        self.assertFalse(changed)
+        self.assertEqual(waiting, state)
+        self.assertEqual(session.request.call_count, 3)
+
+    def test_incomplete_presence_samples_still_fail_closed_before_optional_work(self):
+        for status in ("time_budget", "network_error", "invalid_response", "unstable_snapshot", "page_limit"):
+            with self.subTest(status=status):
+                self.client.reset_mock()
+                self.client.friends.side_effect = ApiFailure(status, operation="list-friends")
+                with patch("playtime.run.time.time", return_value=1060):
+                    state, _ = process(self.state, self.client, CONFIG, 2, now=1060)
+                self.assertEqual(state["status"], status)
+                self.assertEqual(state["players"]["usr_one"]["seconds"], 0)
+                self.assertFalse(state["players"]["usr_one"]["present"])
+                self.assertIsNone(state["last_sample"])
+                self.client.accept_requests.assert_not_called()
+
+    def test_deferred_request_telemetry_excludes_private_response_and_cookie(self):
+        self.client.accept_requests.side_effect = ApiFailure(
+            "api_error", operation="list-requests", http_status=500, reason="PRIVATE_RESPONSE")
+        self.client.cookies.return_value = {"auth": "PRIVATE_COOKIE"}
+        with patch("playtime.run.print") as output, patch("playtime.run.time.time", return_value=1060):
+            process(self.state, self.client, CONFIG, 2, now=1060)
+        logs = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("complete sample retained", logs)
+        for private in ("PRIVATE_RESPONSE", "PRIVATE_COOKIE", "usr_one", "wrld_test"):
+            self.assertNotIn(private, logs)
 
     def test_error_does_not_publish_fabricated_time(self):
         self.client.friends.side_effect = ApiFailure("network_error")

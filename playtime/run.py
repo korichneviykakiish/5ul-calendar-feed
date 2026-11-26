@@ -38,7 +38,8 @@ def process_with_login(state, config, run_number, resume=False, now=None):
         result, changed = process(state, client, config, run_number, now=now)
     finally:
         # Never follow a rate limit or access rejection with another API request.
-        if result is None or result["status"] not in {"rate_limited", "access_denied", "login_required"}:
+        if result is None or (result["status"] not in {"rate_limited", "access_denied", "login_required"}
+                              and result.get("friend_request_status") != "session_verification_pending"):
             try:
                 client.logout()
                 print("[playtime] Sampling session closed")
@@ -63,9 +64,33 @@ def process(state, client, config, run_number, now=None):
         friends = client.friends(config["max_friend_pages"], config["max_sample_duration_seconds"])
         sampled = int(time.time())
         state = apply_sample(state, friends, sampled, run_number, config["max_gap_seconds"])
-        # Joining is explicit opt-in. Accept incoming requests only, never send any.
-        accepted = client.accept_requests(config["max_friend_requests_per_run"])
         state["session_recovery_pending"] = False
+        state["friend_request_status"] = "ok"
+        # A complete presence sample is independent of optional queue maintenance.
+        # Joining is explicit opt-in. Accept incoming requests only, never send any.
+        accepted = "deferred"
+        try:
+            accepted = client.accept_requests(config["max_friend_requests_per_run"])
+        except ApiFailure as error:
+            verify_next_tick = (error.status == "login_required" and error.http_status == 401
+                                and error.reason in {"missing-credentials", "unauthorized"}
+                                and error.retry_after <= 0)
+            if verify_next_tick:
+                # Do not login/retry here or infer session rejection from this endpoint.
+                # The next ordinary tick's verify-session retains all recovery guards.
+                state["friend_request_status"] = "session_verification_pending"
+            elif (error.status in {"login_required", "access_denied", "rate_limited", "configuration_error"}
+                  or error.http_status in {401, 403, 429} or error.retry_after > 0):
+                raise
+            else:
+                state["friend_request_status"] = "deferred"
+            print("[playtime] Friend requests deferred; complete sample retained: " + json.dumps({
+                "status": error.status, "operation": error.operation, "http_status": error.http_status,
+                "session_verification_pending": verify_next_tick,
+            }))
+        except ValueError:
+            state["friend_request_status"] = "deferred"
+            print("[playtime] Friend requests deferred; invalid response; complete sample retained")
         in_world = sum(1 for row in state["players"].values() if row["present"])
         print("[playtime] Sample complete; online friends=" + str(len(friends))
               + "; in configured world=" + str(in_world) + "; accepted=" + str(accepted))

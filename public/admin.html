@@ -1,3 +1,125 @@
-<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Сброс времени</title><style>body{font:18px system-ui;max-width:540px;margin:60px auto;padding:24px;background:#151515;color:#eee}input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;font:inherit}button{background:#ffd128;border:0;cursor:pointer}</style><h1>Сброс времени участников</h1><p>Все накопленные часы будут обнулены. Бот продолжит считать время заново. Панель в мире обновится после публикации.</p><form id="form"><label>Ключ администратора PLAYTIME_ADMIN_SECRET<input id="secret" type="password" autocomplete="off" required></label><label>Для подтверждения напиши СБРОС<input id="confirmText" autocomplete="off" required></label><button>Обнулить время участников</button></form><p id="status" role="status"></p><script>
-form.onsubmit=async e=>{e.preventDefault();if(confirmText.value!=='СБРОС'){statusText('Напиши СБРОС для подтверждения.');return}if(!confirm('Обнулить время всех участников?'))return;const button=form.querySelector('button');button.disabled=true;try{const r=await fetch('/api/playtime',{method:'POST',headers:{Authorization:'Bearer '+secret.value,'X-Playtime-Action':'reset-confirmed'},cache:'no-store'});const data=await r.json();statusText(r.ok&&data.status==='reset'?'Время обнулено. Панель обновится после следующей публикации.':data.status==='busy'?'Бот сейчас обновляет данные. Повтори через минуту.':r.status===401?'Неверный ключ администратора.':'Сброс не выполнен: '+data.status)}catch{statusText('Не удалось получить ответ. Проверь панель перед повторным сбросом.')}finally{secret.value='';button.disabled=false}};function statusText(s){document.getElementById('status').textContent=s}
-</script></html>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подсчёт времени участников</title>
+<style>
+body{font:18px system-ui;max-width:540px;margin:40px auto;padding:24px;background:#151515;color:#eee}
+input,button{box-sizing:border-box;width:100%;padding:14px;margin:12px 0;font:inherit}
+input{background:#242424;color:#fff;border:1px solid #777;border-radius:6px}
+button{background:#ffd128;color:#151515;border:0;border-radius:6px;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+section{margin-top:32px;padding-top:20px;border-top:1px solid #555}
+h1{font-size:28px}h2{font-size:22px}p{line-height:1.5}
+#resetButton{background:#383838;color:#fff;border:1px solid #888}
+#status{min-height:2em}a{color:#ffd128}
+</style>
+</head>
+<body>
+<h1>Подсчёт времени участников</h1>
+<form id="form">
+<label for="secret">Ключ администратора PLAYTIME_ADMIN_SECRET</label>
+<input id="secret" type="password" autocomplete="off" required>
+<p>Если таблица перестала обновляться, восстанови вход бота. Накопленные часы сохранятся.</p>
+<button id="resumeButton" type="button">Возобновить подсчёт</button>
+<section aria-labelledby="resetTitle">
+<h2 id="resetTitle">Обнулить время</h2>
+<p>Все накопленные часы будут удалены. Следующие минуты начнут считаться с нуля. Панель в мире обновится после публикации.</p>
+<label for="confirmText">Для подтверждения напиши СБРОС</label>
+<input id="confirmText" autocomplete="off" required>
+<button id="resetButton" type="submit">Обнулить время участников</button>
+</section>
+</form>
+<p id="status" role="status" aria-live="polite"></p>
+<p><a href="/api/playtime" target="_blank" rel="noopener">Посмотреть данные таблицы</a></p>
+<script>
+const form = document.getElementById('form');
+const secret = document.getElementById('secret');
+const confirmText = document.getElementById('confirmText');
+const resumeButton = document.getElementById('resumeButton');
+const resetButton = document.getElementById('resetButton');
+let pending = false;
+function statusText(text) { document.getElementById('status').textContent = text; }
+function failureMessage(response, data) {
+  if (response.status === 401) return 'Ключ не совпадает с текущим Production-деплоем. Проверь PLAYTIME_ADMIN_SECRET в Production и Redeploy после его изменения.';
+  if (data.status === 'admin_secret_invalid_format') return 'В Production задан ключ короче 32 символов или с кириллицей. Задай PLAYTIME_ADMIN_SECRET из 32+ латинских букв и цифр и сделай Redeploy.';
+  if (data.status === 'separate_admin_secret_required') return 'PLAYTIME_ADMIN_SECRET должен отличаться от CRON_SECRET.';
+  if (Number.isFinite(data.retry_at) && data.retry_at > Date.now() / 1000) {
+    const minutes = Math.max(1, Math.ceil((data.retry_at - Date.now() / 1000) / 60));
+    return 'Действует ограничение на запросы. Подожди не меньше ' + minutes + ' мин. Автоматического повтора входа не будет.';
+  }
+  if (data.status === 'busy') return 'Бот сейчас обновляет данные. Дождись завершения; эта операция не выполнена.';
+  if (data.status === 'already_checked') return 'В этой минуте проверка уже выполнялась. Восстановление не подтверждено. Повтори вручную через минуту.';
+  if (data.status === 'disabled') return 'Подсчёт отключён на сервере. Проверь PLAYTIME_ENABLED=true в Production и выполни Redeploy.';
+  if (data.status === 'rate_limited') return 'VRChat ограничил запросы. Повторный вход не выполнялся. Не запускай восстановление несколько раз подряд.';
+  if (['login_required', 'waiting_for_login', 'access_denied', 'configuration_error', 'logout_failed'].includes(data.status)) return 'Вход не восстановлен. Проверь доступ бота к VRChat и запросы подтверждения входа. Автоматических повторов не будет.';
+  return 'Сервер не подтвердил операцию. Проверь состояние сервиса перед повторной попыткой.';
+}
+async function postAction(action, key) {
+  const response = await fetch('/api/playtime', {
+    method: 'POST', cache: 'no-store',
+    headers: {Authorization: 'Bearer ' + key, 'X-Playtime-Action': action}
+  });
+  return {response, data: await response.json()};
+}
+async function performAction(action) {
+  if (pending) return;
+  const key = secret.value.trim();
+  if (!key) { statusText('Введи ключ администратора.'); secret.focus(); return; }
+  pending = true;
+  resumeButton.disabled = resetButton.disabled = true;
+  let loggedIn = false;
+  statusText(action === 'resume' ? 'Восстанавливаю вход бота…' : 'Обнуляю время участников…');
+  try {
+    const result = await postAction(action, key);
+    if (action === 'reset-confirmed') {
+      if (result.response.ok && result.data.status === 'reset') {
+        confirmText.value = '';
+        statusText('Время обнулено. Панель обновится после следующей публикации.');
+      } else statusText(failureMessage(result.response, result.data));
+      return;
+    }
+    if (!result.response.ok || result.data.status !== 'ok') {
+      statusText(failureMessage(result.response, result.data));
+      return;
+    }
+    loggedIn = true;
+    statusText('Вход восстановлен. Проверяю расписание подсчёта…');
+    const schedule = await postAction('schedule-status', key);
+    if (!schedule.response.ok || schedule.data.status !== 'schedule_status') {
+      statusText('Вход восстановлен, но расписание не подтверждено. Автоматический подсчёт пока не восстановлен. Накопленные часы сохранены.');
+      return;
+    }
+    if (Number.isInteger(schedule.data.job_id) && schedule.data.job_id > 0) {
+      const enabled = await postAction('schedule', key);
+      if (!enabled.response.ok || enabled.data.status !== 'schedule_ready' || enabled.data.enabled !== true || enabled.data.job_id !== schedule.data.job_id) {
+        statusText('Вход восстановлен, но включить прежнее расписание не удалось. Автоматический подсчёт не подтверждён. Накопленные часы сохранены.');
+        return;
+      }
+    } else {
+      statusText('Вход восстановлен, но расписание требует проверки. Автоматический подсчёт не подтверждён.');
+      return;
+    }
+    statusText('Подсчёт возобновлён: вход восстановлен, минутное расписание включено. Накопленные часы сохранены. После сброса первые минуты появятся после двух успешных проверок.');
+  } catch {
+    statusText(loggedIn
+      ? 'Вход восстановлен, но ответа о расписании нет. Автоматический подсчёт не подтверждён; повторного входа не было.'
+      : 'Ответ не получен. Проверь данные таблицы перед повторной попыткой. Автоматического повтора не будет.');
+  } finally {
+    secret.value = '';
+    pending = false;
+    resumeButton.disabled = resetButton.disabled = false;
+  }
+}
+resumeButton.onclick = () => performAction('resume');
+form.onsubmit = event => {
+  event.preventDefault();
+  if (pending) return;
+  if (confirmText.value !== 'СБРОС') { statusText('Напиши СБРОС для подтверждения.'); return; }
+  if (!confirm('Обнулить время всех участников?')) return;
+  return performAction('reset-confirmed');
+};
+</script>
+</body>
+</html>

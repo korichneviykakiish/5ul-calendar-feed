@@ -186,6 +186,15 @@ def advance(state, client, now):
         if error.status == "time_budget":
             return state
         calendar = state.setdefault("calendar", {})
+        verify_next_tick = (error.status == "login_required" and error.http_status == 401
+                            and error.reason in {"missing-credentials", "unauthorized"}
+                            and error.retry_after <= 0)
+        if verify_next_tick:
+            # This optional endpoint cannot authorize login. Keep the completed
+            # presence sample; the next ordinary tick verifies the session first.
+            calendar.update(status="session_verification_pending", retry_at=now + RETRY_SECONDS)
+            print("[calendar] Session verification pending; complete sample and previous feed retained")
+            return state
         calendar.update(status=error.status, retry_at=now + max(RETRY_SECONDS, error.retry_after))
         if error.status in {"login_required", "access_denied", "rate_limited"}:
             state = interrupt(state, error.status, now, error.retry_after)
